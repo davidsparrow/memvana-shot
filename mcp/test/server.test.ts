@@ -31,15 +31,22 @@ describe("MCP server", () => {
   test("exposes the V0 tools", async () => {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+      "create_tags",
+      "edit_screenshot",
+      "edit_tag",
       "get_analysis_batch",
       "get_library_stats",
       "get_screenshot",
       "get_status",
+      "get_tagging_batch",
       "list_screenshots",
+      "list_tags",
       "open_screenshot",
       "save_analyses",
       "scan_screenshots",
       "search_screenshots",
+      "suggest_tags",
+      "tag_screenshots",
     ]);
   });
 
@@ -131,6 +138,56 @@ describe("MCP analysis and search tools", needsHelper, () => {
 
     const missing = await client.callTool({ name: "open_screenshot", arguments: { id: "nope" } });
     assert.equal(missing.isError, true);
+  });
+});
+
+describe("MCP tag and edit tools", needsHelper, () => {
+  test("create, tag, suggest, edit and filter through the protocol", async () => {
+    await client.callTool({ name: "scan_screenshots", arguments: { folder: t.folder } });
+    const listed = JSON.parse(text(await client.callTool({ name: "list_screenshots", arguments: { limit: 10 } })));
+    const analyses = listed.map((r: { id: string; file: string }) => ({ id: r.id, ...FIXTURE_ANALYSES[r.file] }));
+    await client.callTool({ name: "save_analyses", arguments: { analyses } });
+    const id = (file: string) => listed.find((r: { file: string }) => r.file === file).id as string;
+
+    const noVocab = await client.callTool({ name: "get_tagging_batch", arguments: {} });
+    assert.equal(noVocab.isError, true);
+
+    await client.callTool({
+      name: "create_tags",
+      arguments: { tags: [{ name: "Coffee", description: "Coffee gear and orders" }], proposed_by_ai: true },
+    });
+    const batch = JSON.parse(text(await client.callTool({ name: "get_tagging_batch", arguments: { limit: 10 } })));
+    assert.deepEqual(batch.tag_vocabulary, [{ name: "Coffee", description: "Coffee gear and orders" }]);
+    assert.equal(batch.items.length, 5);
+
+    const suggestions = batch.items.map((i: { id: string; file_name: string }) => ({
+      id: i.id,
+      tags: i.file_name === "receipt.jpg" ? ["Coffee"] : [],
+    }));
+    const suggested = JSON.parse(text(await client.callTool({ name: "suggest_tags", arguments: { suggestions } })));
+    assert.equal(suggested.suggested, 1);
+
+    await client.callTool({ name: "tag_screenshots", arguments: { ids: [id("receipt.jpg")], add: ["Coffee", "Kitchen"] } });
+    const tags = JSON.parse(text(await client.callTool({ name: "list_tags", arguments: {} })));
+    assert.deepEqual(
+      tags.map((tag: { name: string; confirmed: number; added: number }) => [tag.name, tag.confirmed, tag.added]),
+      [["Coffee", 1, 0], ["Kitchen", 0, 1]],
+    );
+
+    const edited = await client.callTool({
+      name: "edit_screenshot",
+      arguments: { id: id("receipt.jpg"), notes: "Gift for Sam", short_description: null },
+    });
+    assert.equal(JSON.parse(text(edited)).details.notes, "Gift for Sam");
+
+    const found = JSON.parse(
+      text(await client.callTool({ name: "search_screenshots", arguments: { query: "gift", tags: ["coffee"] } })),
+    );
+    assert.equal(found.results[0].file, "receipt.jpg");
+    assert.deepEqual(found.results[0].tags, ["Coffee", "Kitchen"]);
+
+    const renamed = await client.callTool({ name: "edit_tag", arguments: { name: "Kitchen", merge_into: "Coffee" } });
+    assert.equal(JSON.parse(text(renamed)).merged_into, "Coffee");
   });
 });
 
