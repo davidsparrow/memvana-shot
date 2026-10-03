@@ -9,9 +9,12 @@ is deliberately not a general photo manager.
 - [x] On-device OCR, Vision labels, thumbnails, and visual fingerprints (Apple Vision)
 - [x] Local SQLite library with stable IDs, capture dates, and device metadata
 - [x] Incremental rescans: only new or changed files are processed; renamed files keep their identity
-- [ ] Claude-written understanding for each screenshot: description, *likely reason saved*, entities, topics
-- [ ] Natural-language search across OCR and AI understanding
-- [ ] Open the original screenshot
+- [x] Claude-written understanding for each screenshot: description, *likely reason saved*, entities, topics, keywords
+- [x] Batch analysis by a dedicated subagent, with parallel batches that never overlap
+- [x] Natural-language search across OCR and AI understanding, with Claude-driven query expansion
+- [x] Library overview: top topics, content types, apps, captures per month
+- [x] Open the original screenshot, or reveal it in Finder
+- [x] Edited screenshots are re-analyzed automatically
 
 ## V0.5: Persistent screenshot engine
 
