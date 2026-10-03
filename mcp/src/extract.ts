@@ -4,6 +4,7 @@ import { type Config, thumbsDir } from "./config.ts";
 import { inferCaptureDate } from "./dates.ts";
 import { type Db, now, transaction } from "./db.ts";
 import { type ExtractSuccess, helperVersion, runExtract } from "./helper.ts";
+import { reindexScreenshot } from "./search-index.ts";
 
 export interface ExtractSummary {
   processed: number;
@@ -132,6 +133,13 @@ function persistExtraction(db: Db, config: Config, row: PendingRow, r: ExtractSu
       engine,
       stamp,
     );
+    // An analysis written for these exact bytes still holds (e.g. the file was
+    // only touched); one written for older bytes is stale and needs redoing.
+    db.prepare(`
+      UPDATE screenshots SET status = 'analyzed'
+      WHERE id = ? AND EXISTS (SELECT 1 FROM analyses a WHERE a.screenshot_id = ? AND a.content_hash = ?)
+    `).run(row.id, row.id, r.sha256);
+    reindexScreenshot(db, row.id);
     return false;
   });
 }
@@ -160,6 +168,7 @@ function relinkMovedFile(db: Db, config: Config, row: PendingRow, r: ExtractSucc
       missing_since = NULL, modified_at = ?
     WHERE id = ?
   `).run(moved.source_id, moved.source_key, moved.file_path, moved.file_size, moved.file_mtime, now(), original.id);
+  reindexScreenshot(db, original.id); // the file name is searchable
   if (r.thumb) rmSync(r.thumb.path, { force: true });
   return true;
 }

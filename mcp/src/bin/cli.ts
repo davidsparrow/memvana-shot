@@ -12,6 +12,9 @@ const USAGE = `usage: memvana-shot <command> [options]
   scan [folder] [--limit N]      discover new/changed screenshots and extract up to N (default 250)
   list [--status S] [--limit N]  recent screenshots (S: ${STATUSES.join("|")})
   get <id>                       one screenshot's full record
+  search <query> [--also a,b] [--type T] [--after D] [--before D] [--limit N]
+  stats [--after D] [--before D] what you've been screenshotting
+  open <id> [--reveal]           open the original (or reveal it in Finder)
 `;
 
 const { positionals, values } = parseArgs({
@@ -19,6 +22,11 @@ const { positionals, values } = parseArgs({
   options: {
     limit: { type: "string" },
     status: { type: "string" },
+    also: { type: "string" },
+    type: { type: "string" },
+    after: { type: "string" },
+    before: { type: "string" },
+    reveal: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -60,6 +68,25 @@ try {
       print(detail);
       break;
     }
+    case "search":
+      print(
+        library.search({
+          query: positionals.slice(1).join(" "),
+          also: values.also?.split(",").map((s) => s.trim()).filter(Boolean),
+          contentType: values.type,
+          after: values.after,
+          before: values.before,
+          limit,
+        }),
+      );
+      break;
+    case "stats":
+      print(library.stats({ after: values.after, before: values.before }));
+      break;
+    case "open":
+      if (!arg) throw new Error("open needs an id");
+      print(await library.open(arg, values.reveal === true));
+      break;
     default:
       process.stderr.write(USAGE);
       process.exitCode = 1;

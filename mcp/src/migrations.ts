@@ -4,6 +4,8 @@
 // any future importer key off screenshots.id, so a screenshot keeps its id
 // across rescans, renames (matched by content hash) and source changes.
 
+import { CREATE_SEARCH_INDEX, indexRowsSql } from "./search-index.ts";
+
 export interface Migration {
   version: number;
   sql: string;
@@ -74,6 +76,41 @@ export const migrations: Migration[] = [
         engine                 TEXT NOT NULL,
         extracted_at           TEXT NOT NULL
       );
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      -- Claude's understanding of a screenshot. content_hash records which
+      -- version of the image it describes, so edits can mark it stale.
+      CREATE TABLE analyses (
+        screenshot_id        TEXT PRIMARY KEY REFERENCES screenshots(id) ON DELETE CASCADE,
+        short_description    TEXT NOT NULL,
+        detailed_description TEXT NOT NULL,
+        likely_reason_saved  TEXT NOT NULL,
+        content_type         TEXT NOT NULL,
+        source_app           TEXT,
+        entities             TEXT NOT NULL DEFAULT '[]',
+        topics               TEXT NOT NULL DEFAULT '[]',
+        keywords             TEXT NOT NULL DEFAULT '[]',
+        sensitive            INTEGER NOT NULL DEFAULT 0,
+        confidence           REAL,
+        model                TEXT,
+        analysis_version     INTEGER NOT NULL,
+        content_hash         TEXT,
+        analyzed_at          TEXT NOT NULL
+      );
+      CREATE INDEX analyses_content_type ON analyses (content_type);
+
+      -- Batches handed out for analysis are leased, so parallel analysts never
+      -- receive the same screenshots.
+      ALTER TABLE screenshots ADD COLUMN analysis_claimed_until TEXT;
+
+      ALTER TABLE screenshots ADD COLUMN search_rowid INTEGER;
+      CREATE UNIQUE INDEX screenshots_search_rowid ON screenshots (search_rowid);
+      ${CREATE_SEARCH_INDEX}
+      UPDATE screenshots SET search_rowid = rowid WHERE id IN (SELECT screenshot_id FROM extractions);
+      ${indexRowsSql("1")};
     `,
   },
 ];
