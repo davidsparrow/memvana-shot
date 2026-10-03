@@ -113,4 +113,13 @@ export const migrations: Migration[] = [
       ${indexRowsSql("1")};
     `,
   },
+  {
+    version: 3,
+    // The filename column now holds meaningful name words (name_terms) instead
+    // of the raw path, so rebuild every index row.
+    sql: `
+      DELETE FROM search_index;
+      ${indexRowsSql("1")};
+    `,
+  },
 ];

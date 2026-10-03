@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { migrations } from "./migrations.ts";
+import { nameTerms } from "./names.ts";
 
 export type Db = DatabaseSync;
 
@@ -22,6 +23,8 @@ export function openDb(path: string): Db {
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
   `);
+  // Used by the search index (and its migrations) to index meaningful name words.
+  db.function("name_terms", { deterministic: true }, (key) => nameTerms(String(key ?? "")));
   migrate(db);
   return db;
 }

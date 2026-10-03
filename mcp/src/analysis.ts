@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { type Db, now, transaction } from "./db.ts";
+import { type NameHint, nameHint } from "./names.ts";
 import { reindexScreenshot } from "./search-index.ts";
 
 /** Bump when the guide or schema changes enough that old analyses are worth redoing. */
@@ -50,6 +51,16 @@ export const ANALYSIS_GUIDE = `How to analyze screenshots for Memvana Shot
 
 Look at each image, using the OCR text to read small print. Write one analysis
 per screenshot id, then save them all in a single save_analyses call.
+
+Each screenshot comes with its file_name and folder. When name_is_descriptive
+is true, the person chose that name, so treat it as strong evidence of what
+they care about and why they kept the image. Work its concepts into topics,
+entities and keywords, and into likely_reason_saved. For example,
+"magus__eddm_door-hanger-strip-magnets.png" points to EDDM direct-mail
+marketing, door hangers and magnets. A folder such as "Recipes/" or "Kitchen
+remodel/" is a deliberate grouping. Expand abbreviations you're confident
+about (EDDM = Every Door Direct Mail) and keep the original term as a keyword
+too. Ignore auto-generated names ("Screenshot 2026-…", "IMG_2041").
 
 Fields
 - short_description: one line, under 120 characters. Be specific: "Kettle-cooked
@@ -108,10 +119,9 @@ export const AnalysisInput = z.object({
 });
 export type AnalysisInput = z.infer<typeof AnalysisInput>;
 
-export interface BatchItem {
+export interface BatchItem extends NameHint {
   id: string;
   captured_at: string | null;
-  file: string;
   width: number | null;
   height: number | null;
   source_device: string | null;
@@ -171,7 +181,7 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
       items.push({
         id: row.id,
         captured_at: row.captured_at,
-        file: row.source_key,
+        ...nameHint(row.source_key),
         width: row.width,
         height: row.height,
         source_device: row.source_device,

@@ -51,7 +51,7 @@ describe("analysis pipeline", needsHelper, () => {
   test("batch items carry what Claude needs to analyze", async () => {
     await t.library.scan({ folder: t.folder });
     const { items } = t.library.analysisBatch({ limit: 12 });
-    const chips = items.find((i) => i.file === CHIPS);
+    const chips = items.find((i) => i.file_name === CHIPS);
     assert.ok(chips);
     assert.match(chips.ocr_text, /Tortilla Chips/);
     assert.ok(chips.thumb_path?.endsWith(".jpg"));
@@ -88,7 +88,7 @@ describe("analysis pipeline", needsHelper, () => {
   test("ids re-lease analyzed screenshots for a second look", async () => {
     const ids = await analyzedLibrary(t);
     const again = t.library.analysisBatch({ ids: [ids.get("receipt.jpg")!, "nope"] });
-    assert.deepEqual(again.items.map((i) => i.file), ["receipt.jpg"]);
+    assert.deepEqual(again.items.map((i) => i.file_name), ["receipt.jpg"]);
   });
 
   test("an edited image needs re-analysis; a merely touched one does not", async () => {

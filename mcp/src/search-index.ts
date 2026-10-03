@@ -12,10 +12,10 @@ export const SEARCH_COLUMNS = [
   "body", //     detailed description and content type
   "ocr",
   "labels", //   Vision classifier labels
-  "filename",
+  "filename", // meaningful folder and file-name words only (see names.ts)
 ] as const;
 
-export const SEARCH_WEIGHTS = [8, 6, 6, 5, 5, 3, 1.5, 1, 1];
+export const SEARCH_WEIGHTS = [8, 6, 6, 5, 5, 3, 1.5, 1, 4];
 
 export const CREATE_SEARCH_INDEX = `
   CREATE VIRTUAL TABLE search_index USING fts5(
@@ -39,7 +39,7 @@ export function indexRowsSql(where: string): string {
       COALESCE(a.detailed_description, '') || ' ' || COALESCE(a.content_type, ''),
       COALESCE(e.ocr_text, ''),
       COALESCE((SELECT group_concat(json_extract(value, '$.label'), ' ') FROM json_each(e.labels)), ''),
-      s.source_key
+      name_terms(s.source_key)
     FROM screenshots s
     JOIN extractions e ON e.screenshot_id = s.id
     LEFT JOIN analyses a ON a.screenshot_id = s.id

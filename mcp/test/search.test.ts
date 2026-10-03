@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -66,6 +66,15 @@ describe("search", needsHelper, () => {
     const expanded = t.library.search({ query: "barista", also: ["coffee", "brewing"] });
     assert.equal(expanded.results[0]?.file, "receipt.jpg");
     assert.equal(t.library.search({ query: "brews" }).results[0]?.file, "receipt.jpg", "porter stemming");
+  });
+
+  test("descriptive folder and file names are searchable; auto names are not", async () => {
+    mkdirSync(join(t.folder, "Ideas"));
+    copyFileSync(join(t.folder, "nothing-here.png"), join(t.folder, "Ideas", "SageGreenKitchenCabinets.png"));
+    await t.library.scan({ folder: t.folder });
+    assert.equal(t.library.search({ query: "kitchen cabinets" }).results[0]?.file, "Ideas/SageGreenKitchenCabinets.png");
+    assert.equal(t.library.search({ query: "ideas" }).results[0]?.file, "Ideas/SageGreenKitchenCabinets.png");
+    assert.equal(t.library.search({ query: "img" }).total, 0, "IMG_2041 contributes no name terms");
   });
 
   test("OCR text is searchable before analysis", async () => {
