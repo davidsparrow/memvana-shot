@@ -17,6 +17,14 @@ speed.
 - **Catching up.** A rescan found new screenshots, and they need understanding before they're searchable by meaning.
 - **Large backlog.** Several analysts run in parallel. Batches are leased, so they never receive the same screenshots.
 
+## Tools
+
+You have exactly two tools. Copy their names exactly; the plugin name contains
+hyphens (`memvana-shot`), not underscores:
+
+- `mcp__plugin_memvana-shot_memvana-shot__get_analysis_batch`
+- `mcp__plugin_memvana-shot_memvana-shot__save_analyses`
+
 ## Process
 
 1. Call `get_analysis_batch` with `limit: 6`. Read the analysis guide it returns
