@@ -1,0 +1,19 @@
+{
+  "name": "memvana-shot",
+  "version": "0.1.0",
+  "description": "Understand, organize, and search the screenshots you've been hoarding. Local-first: OCR and indexing run on your Mac, and Claude does the understanding.",
+  "author": {
+    "name": "davidsparrow",
+    "url": "https://github.com/davidsparrow"
+  },
+  "homepage": "https://github.com/davidsparrow/memvana-shot",
+  "repository": "https://github.com/davidsparrow/memvana-shot",
+  "license": "MIT",
+  "keywords": ["screenshots", "ocr", "search", "macos", "photos", "local-first", "memvana"],
+  "mcpServers": {
+    "memvana-shot": {
+      "command": "node",
+      "args": ["--disable-warning=ExperimentalWarning", "${CLAUDE_PLUGIN_ROOT}/mcp/dist/server.mjs"]
+    }
+  }
+}

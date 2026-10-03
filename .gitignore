@@ -1,0 +1,25 @@
+# Secrets / local env
+.env
+.env.*
+
+# Node
+node_modules/
+*.tsbuildinfo
+
+# Swift
+native/.build/
+native/.swiftpm/
+*.xcodeproj/
+DerivedData/
+
+# Local libraries / test output
+*.db
+*.db-shm
+*.db-wal
+.tmp/
+
+# Editors / tools
+.DS_Store
+.kilo/
+.vscode/
+.idea/
