@@ -1,6 +1,6 @@
 ---
 name: memvana-shot
-description: Use whenever the user asks about their screenshots. That includes finding one they saved ("that screenshot of…", "the one with the weird chair"), asking what they've been screenshotting, saving or researching, organizing or summarizing their screenshot library, or setting up or updating Memvana Shot. Works through the memvana-shot MCP tools.
+description: Use whenever the user asks about their screenshots. That includes finding one they saved ("that screenshot of…", "the one with the weird chair"), asking what they've been screenshotting, saving or researching, tagging or organizing them, correcting a screenshot's details, or setting up or updating Memvana Shot. Works through the memvana-shot MCP tools.
 ---
 
 # Memvana Shot
@@ -21,7 +21,11 @@ produced on-device. You add the understanding.
 | `scan_screenshots` | Register a folder (`folder`) or rescan known folders. Runs on-device extraction in batches (`extract_limit`, default 250). |
 | `get_analysis_batch` / `save_analyses` | Look at screenshots and record what they are and why they were saved. |
 | `search_screenshots` | Find screenshots: `query` holds the user's words, `also` holds your expansion terms. Supports date and content-type filters. |
-| `get_library_stats` | See what the user has been saving: topics, content types, apps, captures per month. |
+| `get_library_stats` | See what the user has been saving: topics, tags, content types, apps, captures per month. |
+| `list_tags` / `create_tags` / `edit_tag` | The user's tags: list them, create them (with the user's OK), rename, merge, delete, or settle suggestions in bulk. |
+| `tag_screenshots` | Apply the user's tagging decisions: add tags, or remove them (which records a rejection). |
+| `get_tagging_batch` / `suggest_tags` | Your own tag suggestions for analyzed screenshots. Text only, so it's cheap. |
+| `edit_screenshot` | The user's own edits: title, description, reason saved, notes, keywords, or hiding a screenshot. |
 | `get_screenshot` | Get the full record and the thumbnail for one screenshot. |
 | `open_screenshot` | Open the original in Preview, or reveal it in Finder. |
 | `list_screenshots` | Browse by date or pipeline status. |
@@ -48,6 +52,11 @@ produced on-device. You add the understanding.
 
    Group related topics into 5–8 human-sized themes with counts. Add one or two
    specific, slightly surprising observations, then offer a few searches to try.
+7. **Offer starter tags.** Propose 6–12 tags drawn from those themes and from
+   any descriptive folder names, each with a one-line description. On the
+   user's OK (and after their edits), `create_tags` with `proposed_by_ai: true`,
+   then tag the analyzed screenshots (see Tags). Skip this if Finder tags were
+   imported and already cover their needs.
 
 ## Analyzing screenshots
 
@@ -68,6 +77,44 @@ newest screenshots get extracted. When the user corrects a description ("no,
 that's my kitchen remodel"), take a second look with
 `get_analysis_batch({ ids: [id] })` and save the corrected analysis.
 
+## Tags
+
+Tags are the user's own top-level groups ("Recipes", "Kitchen remodel",
+"Pickleball project"). Most people will organize by them, so treat the
+vocabulary as theirs:
+
+- **Only the user creates, renames, merges or deletes tags.** You can propose
+  changes, but you apply them only after a yes.
+- **You suggest; the user decides.** `suggest_tags` records suggestions and
+  can't override anything the user did. When the user removes a tag,
+  `tag_screenshots({ remove })` records a rejection so it won't come back.
+- **Keep the record honest.** Your own tag choices always go through
+  `suggest_tags`, even when the user pre-approves them. If they approved,
+  then confirm them with `edit_tag({ confirm_suggestions: true })`. Use
+  `tag_screenshots` only for tags the user picked for specific screenshots.
+- **Tagging analyzed screenshots** is text only: loop `get_tagging_batch`, then
+  `suggest_tags`, including every id (with an empty list when nothing fits).
+  For big backlogs, delegate to `screenshot-analyst` with "Tag up to 300
+  screenshots". New analyses pick up tag suggestions automatically once tags
+  exist.
+- **After creating a tag,** find likely members with `search_screenshots` and
+  suggest the tag on the good matches.
+- **Reviewing a tag:** search with `tags: [name]`. Results separate `tags`
+  (the user's) from `suggested_tags`. Offer "confirm all N suggestions"
+  (`edit_tag({ confirm_suggestions: true })`) or go through them.
+- **Finder tags** on files in the user's folders are imported on every scan and
+  show up as `added` by Finder. Tags removed in Finder are removed here too.
+
+## Editing details
+
+When the user corrects or adds to a screenshot ("that's actually the supplier I
+picked", "add a note: ask about MOQ"), use `edit_screenshot`. Edits override
+your analysis everywhere, rank high in search, and survive re-analysis. Prefer
+`notes` for the user's own context. Use `short_description` /
+`likely_reason_saved` overrides when the user says your description is wrong.
+`ignored: true` hides a screenshot the user doesn't want in results. Confirm
+briefly what changed.
+
 ## Searching
 
 1. **Expand the query.** Put the user's key words in `query`, and 5–15 terms
@@ -86,7 +133,9 @@ that's my kitchen remodel"), take a second look with
    its date, a one-line description and why it fits. Then add a few alternates
    if they're plausible, and offer to open the original. Keep ids in mind for
    follow-ups, but don't recite them unless asked.
-5. **Be honest about coverage.** If `unanalyzed_in_library` > 0, say that
+5. **Use tags when the user names a group** ("in my Recipes", "anything tagged
+   Pickleball"): add `tags: [...]` as a filter.
+6. **Be honest about coverage.** If `unanalyzed_in_library` > 0, say that
    those screenshots were matched only on their text, and offer to analyze
    them. If nothing fits, say so and suggest other wording. Never invent a
    screenshot.
