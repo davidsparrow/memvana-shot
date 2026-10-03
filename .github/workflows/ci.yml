@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build shot-helper
+        run: npm run build:native
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Committed bundles match source
+        run: |
+          npm run build:mcp
+          git diff --exit-code -- mcp/dist || {
+            echo "::error::mcp/dist is stale. Run 'npm run build:mcp' and commit the result."
+            exit 1
+          }

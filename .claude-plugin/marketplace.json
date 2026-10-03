@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "memvana-shot",
+  "description": "Memvana Shot: free, local-first screenshot intelligence for Claude.",
+  "owner": {
+    "name": "davidsparrow",
+    "url": "https://github.com/davidsparrow"
+  },
+  "plugins": [
+    {
+      "name": "memvana-shot",
+      "description": "Understand, organize, and search the screenshots you've been hoarding.",
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/davidsparrow/memvana-shot"
+    }
+  ]
+}

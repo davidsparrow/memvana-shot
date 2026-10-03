@@ -1,0 +1,72 @@
+// Command-line access to the same library the MCP server uses.
+// Bundled to mcp/dist/cli.mjs.
+import { parseArgs } from "node:util";
+import { assertNodeVersion } from "../node-version.ts";
+
+assertNodeVersion();
+const { Library, STATUSES } = await import("../library.ts");
+
+const USAGE = `usage: memvana-shot <command> [options]
+
+  status                         library location, helper, folders, counts
+  scan [folder] [--limit N]      discover new/changed screenshots and extract up to N (default 250)
+  list [--status S] [--limit N]  recent screenshots (S: ${STATUSES.join("|")})
+  get <id>                       one screenshot's full record
+`;
+
+const { positionals, values } = parseArgs({
+  allowPositionals: true,
+  options: {
+    limit: { type: "string" },
+    status: { type: "string" },
+    help: { type: "boolean", short: "h" },
+  },
+});
+const [command, arg] = positionals;
+if (!command || values.help) {
+  process.stdout.write(USAGE);
+  process.exit(command ? 0 : 1);
+}
+
+const library = Library.open();
+const print = (value: unknown) => process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+const limit = values.limit === undefined ? undefined : Number(values.limit);
+
+try {
+  switch (command) {
+    case "status":
+      print(await library.status());
+      break;
+    case "scan":
+      print(
+        await library.scan({
+          folder: arg,
+          extractLimit: limit,
+          onProgress: (done, total) => process.stderr.write(`\rextracting ${done}/${total}`),
+        }),
+      );
+      process.stderr.write("\n");
+      break;
+    case "list": {
+      const status = values.status as (typeof STATUSES)[number] | undefined;
+      if (status && !STATUSES.includes(status)) throw new Error(`unknown status ${status}`);
+      print(library.list({ status, limit }));
+      break;
+    }
+    case "get": {
+      if (!arg) throw new Error("get needs an id");
+      const detail = library.get(arg);
+      if (!detail) throw new Error(`no screenshot with id ${arg}`);
+      print(detail);
+      break;
+    }
+    default:
+      process.stderr.write(USAGE);
+      process.exitCode = 1;
+  }
+} catch (err) {
+  process.stderr.write(`memvana-shot: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exitCode = 1;
+} finally {
+  library.close();
+}
