@@ -1,5 +1,6 @@
 import type { Db } from "./db.ts";
 import { SEARCH_WEIGHTS } from "./search-index.ts";
+import { listTags, tagKey } from "./tags.ts";
 
 // Words that carry no meaning in a screenshot search ("find that screenshot
 // of the …"). Everything else becomes a search term.
@@ -56,6 +57,10 @@ export interface SearchOptions {
   query?: string;
   also?: string[];
   contentType?: string;
+  /** Only screenshots carrying all of these tags (suggested ones included). */
+  tags?: string[];
+  /** Only screenshots with no tags at all. */
+  untagged?: boolean;
   after?: string;
   before?: string;
   limit?: number;
@@ -71,6 +76,12 @@ export interface SearchHit {
   likely_reason_saved: string | null;
   content_type: string | null;
   topics: string[];
+  /** Tags the user added or confirmed. */
+  tags: string[];
+  /** Claude's tag suggestions, not yet confirmed. */
+  suggested_tags: string[];
+  /** The user has edited this screenshot's details. */
+  edited: boolean;
   sensitive: boolean;
   relevance?: number;
   match?: string;
@@ -89,7 +100,19 @@ export function searchScreenshots(db: Db, options: SearchOptions): SearchResult 
   if (!match && (options.query?.trim() || options.also?.length)) {
     throw new Error("The query has no searchable words. Add specific terms, or use only filters.");
   }
+  const tagParams: Record<string, string> = {};
+  const tagFilters = (options.tags ?? []).map((name, i) => {
+    tagParams[`tag${i}`] = tagKey(name);
+    return `AND EXISTS (SELECT 1 FROM screenshot_tags st JOIN tags t ON t.id = st.tag_id
+                WHERE st.screenshot_id = s.id AND t.name_key = :tag${i} AND st.state != 'rejected')`;
+  });
+  if (options.untagged) {
+    tagFilters.push(
+      "AND NOT EXISTS (SELECT 1 FROM screenshot_tags st WHERE st.screenshot_id = s.id AND st.state != 'rejected')",
+    );
+  }
   const params = {
+    ...tagParams,
     match: match ?? null,
     after: normalizeDateBound(options.after) ?? null,
     before: normalizeDateBound(options.before) ?? null,
@@ -102,10 +125,19 @@ export function searchScreenshots(db: Db, options: SearchOptions): SearchResult 
     AND (:after IS NULL OR s.captured_at >= :after)
     AND (:before IS NULL OR s.captured_at < :before)
     AND (:ctype IS NULL OR a.content_type = :ctype)
+    ${tagFilters.join("\n")}
   `;
   const columns = `
-    s.id, s.captured_at, s.source_key, a.screenshot_id AS analyzed, a.short_description,
-    a.likely_reason_saved, a.content_type, a.topics, a.sensitive
+    s.id, s.captured_at, s.source_key, a.screenshot_id AS analyzed,
+    COALESCE(u.short_description, a.short_description) AS short_description,
+    COALESCE(u.likely_reason_saved, a.likely_reason_saved) AS likely_reason_saved,
+    a.content_type, a.topics, a.sensitive, u.screenshot_id AS edited,
+    (SELECT json_group_array(json_array(t.name, st.state)) FROM screenshot_tags st JOIN tags t ON t.id = st.tag_id
+     WHERE st.screenshot_id = s.id AND st.state != 'rejected') AS tag_states
+  `;
+  const joins = `
+    LEFT JOIN analyses a ON a.screenshot_id = s.id
+    LEFT JOIN user_edits u ON u.screenshot_id = s.id
   `;
 
   let rows: Array<Record<string, any>>;
@@ -114,7 +146,7 @@ export function searchScreenshots(db: Db, options: SearchOptions): SearchResult 
     const from = `
       FROM search_index
       JOIN screenshots s ON s.search_rowid = search_index.rowid
-      LEFT JOIN analyses a ON a.screenshot_id = s.id
+      ${joins}
       WHERE search_index MATCH :match AND ${filters}
     `;
     rows = db
@@ -129,7 +161,7 @@ export function searchScreenshots(db: Db, options: SearchOptions): SearchResult 
     const { limit: _l, offset: _o, ...countParams } = params;
     total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(countParams) as { n: number }).n;
   } else {
-    const from = `FROM screenshots s LEFT JOIN analyses a ON a.screenshot_id = s.id WHERE ${filters}`;
+    const from = `FROM screenshots s ${joins} WHERE ${filters}`;
     const { match: _m, ...rest } = params;
     rows = db
       .prepare(`SELECT ${columns} ${from} ORDER BY s.captured_at DESC LIMIT :limit OFFSET :offset`)
@@ -147,7 +179,11 @@ export function searchScreenshots(db: Db, options: SearchOptions): SearchResult 
   return {
     match_expression: match,
     total,
-    results: rows.map((r) => ({
+    results: rows.map((r) => {
+      const tagStates: Array<[string, string]> = (r.tag_states ? JSON.parse(r.tag_states) : []).sort(
+        (a: [string, string], b: [string, string]) => a[0].localeCompare(b[0]),
+      );
+      return {
       id: r.id,
       captured_at: r.captured_at,
       file: r.source_key,
@@ -156,10 +192,14 @@ export function searchScreenshots(db: Db, options: SearchOptions): SearchResult 
       likely_reason_saved: r.likely_reason_saved,
       content_type: r.content_type,
       topics: r.topics ? JSON.parse(r.topics) : [],
+      tags: tagStates.filter(([, state]) => state !== "suggested").map(([name]) => name),
+      suggested_tags: tagStates.filter(([, state]) => state === "suggested").map(([name]) => name),
+      edited: r.edited !== null,
       sensitive: r.sensitive === 1,
       relevance: typeof r.score === "number" ? Math.round(-r.score * 100) / 100 : undefined,
       match: r.match ? String(r.match).replace(/\s+/g, " ").trim() : undefined,
-    })),
+      };
+    }),
     unanalyzed_in_library: unanalyzed.n,
   };
 }
@@ -236,6 +276,7 @@ export function libraryStats(db: Db, options: StatsOptions = {}) {
       `SELECT a.source_app, COUNT(*) AS count FROM base JOIN analyses a ON a.screenshot_id = base.id
        WHERE a.source_app IS NOT NULL GROUP BY lower(a.source_app) ORDER BY count DESC LIMIT :top`,
     ),
+    tags: listTags(db).map(({ name, total, suggested }) => ({ name, count: total, suggested })),
     sensitive: (
       db
         .prepare(base + "SELECT COUNT(*) AS n FROM base JOIN analyses a ON a.screenshot_id = base.id WHERE a.sensitive = 1")

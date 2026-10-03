@@ -1,7 +1,8 @@
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AnalysisInput } from "../src/analysis.ts";
+import type { z } from "zod";
+import { AnalysisInput } from "../src/analysis.ts";
 import { type Config, resolveHelper } from "../src/config.ts";
 import { Library } from "../src/library.ts";
 
@@ -37,7 +38,7 @@ export function tempLibrary(): TempLibrary {
 }
 
 /** Analyses as Claude might write them for the fixture screenshots, keyed by file name. */
-export const FIXTURE_ANALYSES: Record<string, Omit<AnalysisInput, "id">> = {
+export const FIXTURE_ANALYSES: Record<string, Omit<z.input<typeof AnalysisInput>, "id">> = {
   "Screenshot 2025-08-03 at 4.15.22 PM.png": {
     short_description: "Kettle-cooked blue corn tortilla chip bag, sea salt flavor",
     detailed_description:
@@ -105,7 +106,7 @@ export async function analyzedLibrary(t: TempLibrary): Promise<Map<string, strin
   await t.library.scan({ folder: t.folder });
   const ids = new Map<string, string>();
   for (const row of t.library.list({ limit: 200 })) ids.set(row.file, row.id);
-  const analyses = [...ids].map(([file, id]) => ({ id, ...FIXTURE_ANALYSES[file]! }) as AnalysisInput);
+  const analyses = [...ids].map(([file, id]) => AnalysisInput.parse({ id, ...FIXTURE_ANALYSES[file]! }));
   const saved = t.library.saveAnalyses(analyses, "test-model");
   if (saved.errors.length) throw new Error(JSON.stringify(saved.errors));
   return ids;

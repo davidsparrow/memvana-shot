@@ -14,8 +14,24 @@ import {
 import { type Config, dbPath, defaultConfig, expandHome, helperCandidates, resolveHelper } from "./config.ts";
 import { type Db, getMeta, openDb, schemaVersion } from "./db.ts";
 import { type ExtractSummary, absoluteThumbPath, extractPending, pendingCount } from "./extract.ts";
-import { helperVersion } from "./helper.ts";
+import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
+import { helperVersion, readFinderTags } from "./helper.ts";
 import { type SearchOptions, type SearchResult, type StatsOptions, libraryStats, searchScreenshots } from "./search.ts";
+import {
+  type ScreenshotTag,
+  type Suggestion,
+  type TagEdit,
+  type TagOrigin,
+  createTags,
+  editTag,
+  listTags,
+  suggestTags,
+  syncFinderTags,
+  tagScreenshots,
+  taggingBatch,
+  tagsFor,
+  vocabulary,
+} from "./tags.ts";
 import {
   type ReconcileResult,
   type Source,
@@ -39,6 +55,8 @@ export interface ScanOptions {
 export interface ScanSummary {
   sources: Array<{ location: string; unavailable?: true } & ReconcileResult>;
   extraction: ExtractSummary | { skipped: string };
+  /** Tags picked up from (or removed in) Finder. */
+  finder_tags?: { added: number; removed: number };
   remaining_pending: number;
   next?: string;
 }
@@ -87,6 +105,18 @@ export interface ScreenshotDetail {
   metadata: Record<string, string>;
   thumb_path: string | null;
   analysis: Analysis | null;
+  user_edits: UserEdits | null;
+  /** What search and answers use: the user's edits where present, else Claude's analysis. */
+  details: EffectiveDetails | null;
+  tags: ScreenshotTag[];
+}
+
+export interface EffectiveDetails {
+  short_description: string | null;
+  detailed_description: string | null;
+  likely_reason_saved: string | null;
+  notes: string | null;
+  keywords: string[];
 }
 
 export interface Analysis {
@@ -130,6 +160,18 @@ export class Library {
 
   close(): void {
     this.db.close();
+  }
+
+  private taggingState(): { tags: number; untagged: number } {
+    const tags = (this.db.prepare("SELECT COUNT(*) AS n FROM tags").get() as { n: number }).n;
+    const untagged = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM screenshots WHERE status = 'analyzed' AND ignored = 0 AND missing_since IS NULL AND ai_tagged_at IS NULL",
+        )
+        .get() as { n: number }
+    ).n;
+    return { tags, untagged };
   }
 
   helperPath(): string | undefined {
@@ -190,7 +232,7 @@ export class Library {
       sources,
       counts: Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v ?? 0])),
       suggested_folders: sources.length === 0 ? await this.suggestedFolders() : undefined,
-      next_steps: nextSteps(sources.length, counts, helperInfo.available === true),
+      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState()),
     };
   }
 
@@ -243,10 +285,14 @@ export class Library {
       });
     }
 
+    let finderTags: ScanSummary["finder_tags"];
+    if (helper) finderTags = await this.syncFinderTags(targets.filter((t) => existsSync(t.location)));
+
     const remaining = pendingCount(this.db);
     return {
       sources,
       extraction,
+      finder_tags: finderTags,
       remaining_pending: remaining,
       next: remaining > 0 ? `${remaining} screenshots still need local extraction; scan again to continue.` : undefined,
     };
@@ -302,7 +348,7 @@ export class Library {
     if (!row) return undefined;
     const maxChars = options.ocrMaxChars ?? 4000;
     const ocrText: string = row.ocr_text ?? "";
-    return {
+    const detail: ScreenshotDetail = {
       id: row.id,
       source: { id: row.source_id, kind: row.src_kind, location: row.src_location },
       source_key: row.source_key,
@@ -346,7 +392,12 @@ export class Library {
             stale: row.analysis_hash !== row.content_hash,
           }
         : null,
+      user_edits: userEdits(this.db, id),
+      details: null,
+      tags: tagsFor(this.db, id),
     };
+    detail.details = effectiveDetails(detail.analysis, detail.user_edits);
+    return detail;
   }
 
   /** Leases the next screenshots needing analysis (or specific ids), with absolute thumbnail paths. */
@@ -359,6 +410,55 @@ export class Library {
 
   saveAnalyses(analyses: AnalysisInput[], model?: string): SaveResult & { remaining: number } {
     return { ...saveAnalyses(this.db, analyses, model), remaining: pendingAnalysisCount(this.db) };
+  }
+
+  tagVocabulary() {
+    return vocabulary(this.db);
+  }
+
+  listTags() {
+    return listTags(this.db);
+  }
+
+  createTags(tags: Array<{ name: string; description?: string }>, origin: TagOrigin = "user") {
+    return createTags(this.db, tags, origin);
+  }
+
+  editTag(name: string, edit: TagEdit) {
+    return editTag(this.db, name, edit);
+  }
+
+  tagScreenshots(ids: string[], change: { add?: string[]; remove?: string[] }) {
+    return tagScreenshots(this.db, ids, change);
+  }
+
+  suggestTags(suggestions: Suggestion[]) {
+    return suggestTags(this.db, suggestions);
+  }
+
+  taggingBatch(limit = 40) {
+    return taggingBatch(this.db, Math.min(Math.max(limit, 1), 100));
+  }
+
+  edit(id: string, input: EditInput) {
+    editScreenshot(this.db, id, input);
+    return this.get(id, { ocrMaxChars: 0 });
+  }
+
+  /** Imports Finder tags for every present file in the given folder sources. */
+  private async syncFinderTags(sources: Source[]): Promise<{ added: number; removed: number } | undefined> {
+    const helper = this.helperPath();
+    const folderIds = sources.filter((s) => s.kind === "folder").map((s) => s.id);
+    if (!helper || folderIds.length === 0) return undefined;
+    const jobs = this.db
+      .prepare(`
+        SELECT id, file_path AS path FROM screenshots
+        WHERE missing_since IS NULL AND file_path IS NOT NULL
+          AND source_id IN (${folderIds.map(() => "?").join(", ")})
+      `)
+      .all(...folderIds) as Array<{ id: string; path: string }>;
+    const tags = await readFinderTags(helper, jobs.map((j) => ({ ...j })));
+    return syncFinderTags(this.db, tags);
   }
 
   search(options: SearchOptions): SearchResult {
@@ -397,7 +497,12 @@ export class Library {
   }
 }
 
-function nextSteps(sourceCount: number, counts: Record<string, number | null>, helperReady: boolean): string[] {
+function nextSteps(
+  sourceCount: number,
+  counts: Record<string, number | null>,
+  helperReady: boolean,
+  tagging: { tags: number; untagged: number },
+): string[] {
   const steps: string[] = [];
   if (!helperReady) steps.push("Build the native helper (see helper.fix) so screenshots can be extracted.");
   if (sourceCount === 0) {
@@ -408,6 +513,23 @@ function nextSteps(sourceCount: number, counts: Record<string, number | null>, h
   if (counts.extracted) {
     steps.push(`${counts.extracted} screenshots await analysis: get_analysis_batch, then save_analyses.`);
   }
+  if (counts.analyzed && tagging.tags === 0) {
+    steps.push("No tags yet. Propose 6-12 starter tags from get_library_stats and create them once the user agrees.");
+  } else if (tagging.tags > 0 && tagging.untagged > 0) {
+    steps.push(`${tagging.untagged} analyzed screenshots haven't been considered for tags: get_tagging_batch, then suggest_tags.`);
+  }
   if (!steps.length) steps.push("Library is up to date. Search with search_screenshots.");
   return steps;
+}
+
+function effectiveDetails(analysis: Analysis | null, edits: UserEdits | null): EffectiveDetails | null {
+  if (!analysis && !edits) return null;
+  const removed = new Set(edits?.keywords_removed ?? []);
+  return {
+    short_description: edits?.short_description ?? analysis?.short_description ?? null,
+    detailed_description: edits?.detailed_description ?? analysis?.detailed_description ?? null,
+    likely_reason_saved: edits?.likely_reason_saved ?? analysis?.likely_reason_saved ?? null,
+    notes: edits?.notes ?? null,
+    keywords: [...(analysis?.keywords ?? []).filter((k) => !removed.has(k)), ...(edits?.keywords_added ?? [])],
+  };
 }
