@@ -31,6 +31,7 @@ describe("MCP server", () => {
   test("exposes the tools", async () => {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+      "connect_photos",
       "create_tags",
       "edit_screenshot",
       "edit_tag",

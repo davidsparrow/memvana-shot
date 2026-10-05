@@ -10,15 +10,18 @@ const { MODEL } = await import("../semantic/model.ts");
 
 const USAGE = `usage: memvana-shot <command> [options]
 
-  status                         library location, helper, folders, counts
+  status                         library location, helper, sources, Photos access, counts
   scan [folder] [--limit N]      discover new/changed screenshots and extract up to N (default 250)
+  scan --photos [--limit N]      the same for the Photos library only
+  photos connect [--limit N]     ask for Photos access (macOS prompts once), then scan Photos
+  photos settings                open the Photos pane of System Settings if access is off
   list [--status S] [--limit N]  recent screenshots (S: ${STATUSES.join("|")})
   get <id>                       one screenshot's full record
   search <query> [--also a,b] [--type T] [--after D] [--before D] [--limit N] [--mode M]
                                  M: ${SEARCH_MODES.join("|")} (auto adds meaning when set up)
   related <id> [--limit N]       screenshots related to one, and why
   stats [--after D] [--before D] what you've been screenshotting
-  open <id> [--reveal]           open the original (or reveal it in Finder)
+  open <id> [--reveal]           open the original (or reveal it in Finder); Photos opens a copy
 
   semantic                       semantic search status
   semantic setup                 download the local embedding model (one time, ~330 MB)
@@ -47,6 +50,7 @@ const { positionals, values } = parseArgs({
     reveal: { type: "boolean" },
     mode: { type: "string" },
     semantic: { type: "boolean" },
+    photos: { type: "boolean" },
     title: { type: "string" },
     description: { type: "string" },
     reason: { type: "string" },
@@ -79,8 +83,20 @@ try {
       print(
         await library.scan({
           folder: arg,
+          photos: values.photos,
           extractLimit: limit,
-          onProgress: (done, total) => process.stderr.write(`\rextracting ${done}/${total}`),
+          onProgress: progress("extracting"),
+        }),
+      );
+      process.stderr.write("\n");
+      break;
+    case "photos":
+      if (arg !== "connect" && arg !== "settings") throw new Error("usage: photos connect|settings");
+      print(
+        await library.connectPhotos({
+          extractLimit: arg === "settings" ? 0 : limit,
+          openSettings: arg === "settings",
+          onProgress: progress("extracting"),
         }),
       );
       process.stderr.write("\n");

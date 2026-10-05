@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   type AnalysisInput,
@@ -11,11 +11,22 @@ import {
   pendingAnalysisCount,
   saveAnalyses,
 } from "./analysis.ts";
-import { type Config, dbPath, defaultConfig, expandHome, helperCandidates, resolveHelper } from "./config.ts";
+import {
+  type Config,
+  appCandidates,
+  dbPath,
+  defaultConfig,
+  expandHome,
+  helperCandidates,
+  resolveApp,
+  resolveHelper,
+} from "./config.ts";
 import { type Db, getMeta, openDb, schemaVersion, transaction } from "./db.ts";
 import { type ExtractSummary, absoluteThumbPath, extractPending, pendingCount } from "./extract.ts";
 import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
 import { helperVersion, readFinderTags } from "./helper.ts";
+import { NAME_SQL } from "./names.ts";
+import { AppBridge, type PhotosAuthorization, type PhotosBridge, PhotosAccessError, hasAccess } from "./photos.ts";
 import { type RelatedResult, relatedScreenshots } from "./related.ts";
 import { type SearchOptions, type SearchResult, type StatsOptions, libraryStats, searchScreenshots } from "./search.ts";
 import { rebuildSearchIndex } from "./search-index.ts";
@@ -41,8 +52,11 @@ import {
   type Source,
   discoverFolder,
   ensureFolderSource,
+  ensurePhotosSource,
   listSources,
+  photosSource,
   reconcileFolder,
+  reconcilePhotos,
 } from "./scanner.ts";
 
 const execFileAsync = promisify(execFile);
@@ -52,12 +66,14 @@ export type Status = (typeof STATUSES)[number];
 
 export interface ScanOptions {
   folder?: string;
+  /** Scan only the Photos library (once connected). */
+  photos?: boolean;
   extractLimit?: number;
   onProgress?: (done: number, total: number) => void;
 }
 
 export interface ScanSummary {
-  sources: Array<{ location: string; unavailable?: true } & ReconcileResult>;
+  sources: Array<{ kind: Source["kind"]; location: string; unavailable?: true; reason?: string } & ReconcileResult>;
   extraction: ExtractSummary | { skipped: string };
   /** Tags picked up from (or removed in) Finder. */
   finder_tags?: { added: number; removed: number };
@@ -88,6 +104,8 @@ export interface ScreenshotDetail {
   id: string;
   source: { id: string; kind: string; location: string };
   source_key: string;
+  /** The file's name, or for Photos the name Photos reports (e.g. IMG_3794.PNG). */
+  file_name: string;
   file_path: string | null;
   photo_asset_id: string | null;
   captured_at: string | null;
@@ -141,8 +159,35 @@ export interface Analysis {
   stale: boolean;
 }
 
-/** Opens a file (or reveals it in Finder). Swappable for tests. */
+/** Opens a file or URL (or reveals a file in Finder). Swappable for tests. */
 export type Opener = (path: string, reveal: boolean) => Promise<void>;
+
+export interface PhotosStatus {
+  /** Memvana Shot.app, which holds the Photos permission, is installed with the plugin. */
+  available: boolean;
+  /** The Photos library is one of the library's sources. */
+  connected: boolean;
+  authorization?: PhotosAuthorization;
+  /** Screenshots from Photos in the library. */
+  screenshots?: number;
+  /** What the user can do when Photos is unavailable or access is off. */
+  fix?: string;
+}
+
+export type ConnectPhotosResult =
+  | { authorization: PhotosAuthorization; connected: false; fix: string; settings_opened: boolean }
+  | ({ authorization: PhotosAuthorization; connected: true } & ScanSummary);
+
+const PHOTOS_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos";
+
+/** Exported copies opened in Preview are kept this long, then cleared. */
+const EXPORT_TTL_MS = 24 * 60 * 60_000;
+
+function photosFix(authorization: PhotosAuthorization): string {
+  return authorization === "restricted"
+    ? "Photos access is restricted on this Mac (for example by Screen Time or a device management profile), so only an administrator can allow it."
+    : "Open System Settings > Privacy & Security > Photos and turn on Memvana Shot, then ask again.";
+}
 
 const macOpen: Opener = async (path, reveal) => {
   await execFileAsync("open", reveal ? ["-R", path] : [path], { timeout: 10_000 });
@@ -151,6 +196,8 @@ const macOpen: Opener = async (path, reveal) => {
 export interface LibraryOptions {
   /** Replaces the local embedding model (tests). */
   embedder?: Embedder;
+  /** Replaces the Photos bridge (tests); null means none. Default: Memvana Shot.app, if present. */
+  photos?: PhotosBridge | null;
 }
 
 export class Library {
@@ -158,12 +205,20 @@ export class Library {
   readonly db: Db;
   /** Meaning vectors for semantic search and related screenshots. */
   readonly semantic: SemanticIndex;
+  /** Reads screenshots from the Photos library, when Memvana Shot.app is available. */
+  readonly photos: PhotosBridge | undefined;
   opener: Opener = macOpen;
 
   constructor(config: Config, db: Db, options: LibraryOptions = {}) {
     this.config = config;
     this.db = db;
     this.semantic = new SemanticIndex(db, config, options.embedder);
+    if (options.photos !== undefined) {
+      this.photos = options.photos ?? undefined;
+    } else {
+      const app = resolveApp(config);
+      this.photos = app ? new AppBridge(app, join(config.home, "tmp")) : undefined;
+    }
   }
 
   static open(config: Config = defaultConfig(), options: LibraryOptions = {}): Library {
@@ -205,7 +260,9 @@ export class Library {
       helperInfo = {
         available: false,
         looked_in: helperCandidates(this.config),
-        fix: `Build it: swift build -c release --package-path "${join(this.config.pluginRoot, "native")}"`,
+        fix:
+          "Memvana Shot.app is missing from the plugin's bin folder; reinstall the plugin. " +
+          `In a source checkout, build it: swift build -c release --package-path "${join(this.config.pluginRoot, "native")}"`,
       };
     }
 
@@ -237,6 +294,7 @@ export class Library {
 
     this.semantic.schedule();
     const semantic = this.semantic.status();
+    const photos = await this.photosStatus();
     return {
       library: {
         home: this.config.home,
@@ -246,13 +304,17 @@ export class Library {
       helper: helperInfo,
       sources,
       counts: Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v ?? 0])),
+      photos,
       semantic_search: semantic,
       suggested_folders: sources.length === 0 ? await this.suggestedFolders() : undefined,
-      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic),
+      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic, photos),
     };
   }
 
-  /** Scans registered folders (or registers `folder` first), then extracts up to extractLimit pending items. */
+  /**
+   * Scans every source (folders and Photos), one new `folder`, or only
+   * Photos, then extracts up to extractLimit pending items, newest first.
+   */
   async scan(options: ScanOptions = {}): Promise<ScanSummary> {
     let targets: Source[];
     if (options.folder) {
@@ -261,12 +323,16 @@ export class Library {
         throw new Error(`Not a folder: ${folder}`);
       }
       targets = [ensureFolderSource(this.db, folder)];
+    } else if (options.photos) {
+      const source = photosSource(this.db);
+      if (!source) throw new Error("The Photos library isn't connected yet. Use connect_photos (after the user agrees).");
+      targets = [source];
     } else {
-      targets = listSources(this.db).filter((s) => s.kind === "folder");
+      targets = listSources(this.db);
       if (targets.length === 0) {
         const suggestions = await this.suggestedFolders();
         throw new Error(
-          "No screenshot folders registered yet. Call again with `folder`" +
+          "No screenshot sources yet. Connect Photos with connect_photos, or call again with `folder`" +
             (suggestions.length ? `, e.g. ${suggestions.join(" or ")}` : "") + ".",
         );
       }
@@ -274,17 +340,23 @@ export class Library {
 
     const sources: ScanSummary["sources"] = [];
     for (const source of targets) {
+      if (source.kind === "photos") {
+        sources.push(await this.scanPhotos(source));
+        continue;
+      }
       // An unplugged drive or renamed folder shouldn't mark its whole library missing.
       if (!existsSync(source.location)) {
         sources.push({
+          kind: "folder",
           location: source.location,
           unavailable: true,
-          discovered: 0, added: 0, changed: 0, returned: 0, missing: 0,
+          reason: "folder not found",
+          ...NOTHING_FOUND,
         });
         continue;
       }
       const files = await discoverFolder(source.location);
-      sources.push({ location: source.location, ...reconcileFolder(this.db, source, files) });
+      sources.push({ kind: "folder", location: source.location, ...reconcileFolder(this.db, source, files) });
     }
 
     const limit = options.extractLimit ?? 250;
@@ -295,7 +367,10 @@ export class Library {
     } else if (!helper) {
       extraction = { skipped: "shot-helper is not built; see get_status for the fix" };
     } else {
-      extraction = await extractPending(this.db, this.config, helper, {
+      // When this scan found Photos unavailable, leave its screenshots out, so
+      // ones that can't be read don't take the places of folder screenshots.
+      const photosOff = sources.some((s) => s.kind === "photos" && s.unavailable);
+      extraction = await extractPending(this.db, this.config, { helper, photos: photosOff ? undefined : this.photos }, {
         limit,
         onProgress: options.onProgress,
       });
@@ -315,12 +390,82 @@ export class Library {
     };
   }
 
+  /** Brings the library in line with the Photos Screenshots album. Access being off isn't an error here. */
+  private async scanPhotos(source: Source): Promise<ScanSummary["sources"][number]> {
+    const unavailable = (reason: string) => ({
+      kind: "photos" as const,
+      location: source.location,
+      unavailable: true as const,
+      reason,
+      ...NOTHING_FOUND,
+    });
+    if (!this.photos) return unavailable("Memvana Shot.app is missing; reinstall the plugin");
+    try {
+      const assets = await this.photos.list();
+      return { kind: "photos", location: source.location, ...reconcilePhotos(this.db, source, assets) };
+    } catch (err) {
+      if (!(err instanceof PhotosAccessError)) throw err;
+      return unavailable(`Photos access is off (${err.authorization}). ${photosFix(err.authorization)}`);
+    }
+  }
+
+  /** Whether the Photos library can be connected, and whether it is. */
+  async photosStatus(): Promise<PhotosStatus> {
+    const source = photosSource(this.db);
+    const connected = source !== undefined;
+    const screenshots = connected
+      ? (this.db
+          .prepare("SELECT COUNT(*) AS n FROM screenshots WHERE source_id = ? AND missing_since IS NULL")
+          .get(source.id) as { n: number }).n
+      : undefined;
+    if (!this.photos) {
+      return {
+        available: false,
+        connected,
+        screenshots,
+        fix: `Memvana Shot.app is missing (looked in ${appCandidates(this.config).join(", ")}); reinstall the plugin.`,
+      };
+    }
+    let authorization: PhotosAuthorization;
+    try {
+      authorization = await this.photos.status();
+    } catch (err) {
+      return { available: false, connected, screenshots, fix: `Memvana Shot.app didn't respond: ${(err as Error).message}` };
+    }
+    return {
+      available: true,
+      connected,
+      authorization,
+      screenshots,
+      fix: connected && !hasAccess(authorization) ? photosFix(authorization) : undefined,
+    };
+  }
+
+  /**
+   * Asks for Photos access (macOS shows its prompt the first time), then adds
+   * the Photos library as a source and scans it. Without access, optionally
+   * opens the Photos pane of System Settings.
+   */
+  async connectPhotos(options: Omit<ScanOptions, "folder" | "photos"> & { openSettings?: boolean } = {}): Promise<ConnectPhotosResult> {
+    if (!this.photos) {
+      throw new Error(`Memvana Shot.app is missing (looked in ${appCandidates(this.config).join(", ")}); reinstall the plugin.`);
+    }
+    const authorization = await this.photos.authorize();
+    if (!hasAccess(authorization)) {
+      if (options.openSettings) await this.opener(PHOTOS_SETTINGS_URL, false);
+      return { authorization, connected: false, fix: photosFix(authorization), settings_opened: Boolean(options.openSettings) };
+    }
+    ensurePhotosSource(this.db);
+    const { extractLimit, onProgress } = options;
+    return { authorization, connected: true, ...(await this.scan({ photos: true, extractLimit, onProgress })) };
+  }
+
   list(options: ListOptions = {}): ScreenshotSummary[] {
     const limit = Math.min(Math.max(options.limit ?? 25, 1), 200);
     const order = options.order === "oldest" ? "ASC" : "DESC";
     const rows = this.db
       .prepare(`
-        SELECT s.id, s.captured_at, s.status, s.source_key, s.width, s.height, s.missing_since,
+        SELECT s.id, s.captured_at, s.status, ${NAME_SQL} AS name, s.width, s.height, s.missing_since,
                substr(e.ocr_text, 1, 140) AS ocr_snippet
         FROM screenshots s LEFT JOIN extractions e ON e.screenshot_id = s.id
         WHERE (:status IS NULL OR s.status = :status)
@@ -339,7 +484,7 @@ export class Library {
       id: r.id as string,
       captured_at: r.captured_at as string | null,
       status: r.status as Status,
-      file: r.source_key as string,
+      file: r.name as string,
       width: r.width as number | null,
       height: r.height as number | null,
       missing: r.missing_since !== null,
@@ -369,6 +514,7 @@ export class Library {
       id: row.id,
       source: { id: row.source_id, kind: row.src_kind, location: row.src_location },
       source_key: row.source_key,
+      file_name: row.file_name ?? basename(row.source_key),
       file_path: row.file_path,
       photo_asset_id: row.photo_asset_id,
       captured_at: row.captured_at,
@@ -518,15 +664,36 @@ export class Library {
     return libraryStats(this.db, options);
   }
 
-  /** Opens the original file in its default app (Preview), or reveals it in Finder. */
-  async open(id: string, reveal = false): Promise<{ opened: string; reveal: boolean }> {
+  /**
+   * Opens the original file in its default app (Preview), or reveals it in
+   * Finder. A screenshot from Photos opens as an exported copy.
+   */
+  async open(id: string, reveal = false): Promise<{ opened: string; reveal: boolean; note?: string }> {
     const detail = this.get(id, { ocrMaxChars: 0 });
     if (!detail) throw new Error(`No screenshot with id ${id}`);
+    if (detail.photo_asset_id) return this.openFromPhotos(id, detail.photo_asset_id, detail.missing_since, reveal);
     if (!detail.file_path || detail.missing_since || !existsSync(detail.file_path)) {
       throw new Error(`The original file for ${id} is missing (last seen at ${detail.file_path ?? "unknown"}).`);
     }
     await this.opener(detail.file_path, reveal);
     return { opened: detail.file_path, reveal };
+  }
+
+  private async openFromPhotos(id: string, asset: string, missingSince: string | null, reveal: boolean) {
+    if (!this.photos) throw new Error("Memvana Shot.app is missing, so screenshots from Photos can't be opened.");
+    if (missingSince) throw new Error(`${id} is no longer in the Photos Screenshots album (deleted or hidden).`);
+    const dir = join(this.config.home, "tmp", "open");
+    clearOldExports(dir);
+    const path = (await this.photos.exportImages([{ id, asset }], dir)).get(id);
+    if (!path) throw new Error(`Photos couldn't provide the image for ${id}.`);
+    await this.opener(path, false);
+    return {
+      opened: path,
+      reveal: false,
+      note: reveal
+        ? "Screenshots in Photos have no file to show in Finder, so a copy opened in Preview instead."
+        : "Opened a copy exported from Photos.",
+    };
   }
 
   /** Folders worth offering on first run: the macOS screenshot location and ~/Memvana/Screenshots. */
@@ -546,19 +713,38 @@ export class Library {
   }
 }
 
+/** Removes exported copies older than EXPORT_TTL_MS. */
+function clearOldExports(dir: string): void {
+  if (!existsSync(dir)) return;
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    if (Date.now() - statSync(path).mtimeMs > EXPORT_TTL_MS) rmSync(path, { recursive: true, force: true });
+  }
+}
+
+const NOTHING_FOUND: ReconcileResult = { discovered: 0, added: 0, changed: 0, returned: 0, missing: 0 };
+
 function nextSteps(
   sourceCount: number,
   counts: Record<string, number | null>,
   helperReady: boolean,
   tagging: { tags: number; untagged: number },
   semantic: SemanticStatus,
+  photos: PhotosStatus,
 ): string[] {
   const steps: string[] = [];
-  if (!helperReady) steps.push("Build the native helper (see helper.fix) so screenshots can be extracted.");
+  if (!helperReady) steps.push("The native helper is missing (see helper.fix), so screenshots can't be extracted.");
   if (sourceCount === 0) {
-    steps.push("Register a screenshot folder with scan_screenshots({ folder }). See suggested_folders.");
+    if (photos.available) {
+      steps.push(
+        "Offer to connect the Photos library (connect_photos, after the user agrees; macOS asks for permission " +
+          "once), which includes iPhone screenshots synced with iCloud Photos.",
+      );
+    }
+    steps.push("Or register a screenshot folder with scan_screenshots({ folder }). See suggested_folders.");
     return steps;
   }
+  if (photos.connected && photos.fix) steps.push(`Photos is connected but unavailable: ${photos.fix}`);
   if (counts.pending) steps.push(`${counts.pending} screenshots await local extraction: call scan_screenshots.`);
   if (counts.extracted) {
     steps.push(`${counts.extracted} screenshots await analysis: get_analysis_batch, then save_analyses.`);

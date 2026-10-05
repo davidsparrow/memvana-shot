@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { ANALYSIS_GUIDE, AnalysisInput, CONTENT_TYPES } from "./analysis.ts";
 import { Library, STATUSES } from "./library.ts";
@@ -10,7 +11,8 @@ import { cleanUpAbandonedDownloads } from "./semantic/install.ts";
 import { DOWNLOAD_BYTES } from "./semantic/model.ts";
 import { VERSION } from "./version.ts";
 
-const INSTRUCTIONS = `Memvana Shot keeps a local, persistent index of the user's screenshots on their Mac.
+const INSTRUCTIONS = `Memvana Shot keeps a local, persistent index of the user's screenshots on their Mac, from
+folders and from the Photos library (connect_photos, only after the user agrees; macOS asks for permission once).
 Pipeline: scan_screenshots (discover + on-device OCR/thumbnails) → get_analysis_batch / save_analyses (you look
 at each screenshot and record what it is and why it was likely saved) → search_screenshots and
 get_library_stats answer questions. Call get_status when unsure what to do next; it lists next steps.
@@ -29,6 +31,20 @@ function json(value: unknown): CallToolResult {
 
 function failure(err: unknown): CallToolResult {
   return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
+}
+
+/** Reports extraction progress to clients that asked for it. */
+function progressReporter(
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): ((done: number, total: number) => void) | undefined {
+  const progressToken = extra._meta?.progressToken;
+  if (progressToken === undefined) return undefined;
+  return (done, total) => {
+    void extra.sendNotification({
+      method: "notifications/progress",
+      params: { progressToken, progress: done, total, message: `Extracted ${done}/${total}` },
+    });
+  };
 }
 
 /** Appends thumbnails for the first `count` ids, so Claude can check them visually. */
@@ -54,9 +70,10 @@ export function createServer(library: Library): McpServer {
     {
       title: "Library status",
       description:
-        "Where the screenshot library lives, whether the native helper is ready, registered folders, " +
-        "how many screenshots are pending, extracted, analyzed, missing or in error, and whether semantic " +
-        "search is set up and indexed. When no folders are registered it suggests likely screenshot folders.",
+        "Where the screenshot library lives, whether the native helper is ready, its sources (folders and " +
+        "Photos), how many screenshots are pending, extracted, analyzed, missing or in error, whether the " +
+        "Photos library can be or is connected (`photos`), and whether semantic search is set up and " +
+        "indexed. With no sources yet it suggests likely screenshot folders.",
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
@@ -73,15 +90,17 @@ export function createServer(library: Library): McpServer {
     {
       title: "Scan for screenshots",
       description:
-        "Finds new, changed and removed screenshots in registered folders (or registers `folder` first), " +
-        "then runs on-device extraction (OCR, Vision labels, thumbnail, visual fingerprint) on up to " +
-        "`extract_limit` pending screenshots, newest first. Only new or changed files are processed, so it " +
-        "is cheap to call repeatedly. Nothing is uploaded and no files are modified.",
+        "Finds new, changed and removed screenshots in every source: registered folders and, once " +
+        "connected, the Photos library (or registers `folder` first and scans just it). Then runs on-device " +
+        "extraction (OCR, Vision labels, thumbnail, visual fingerprint) on up to `extract_limit` pending " +
+        "screenshots, newest first. Only new or changed screenshots are processed, so it is cheap to call " +
+        "repeatedly. Nothing is uploaded and nothing is modified.",
       inputSchema: {
         folder: z
           .string()
           .optional()
-          .describe("Folder to register and scan (absolute or ~/ path). Omit to rescan registered folders."),
+          .describe("Folder to register and scan (absolute or ~/ path). Omit to rescan every source."),
+        photos: z.boolean().optional().describe("Rescan only the Photos library."),
         extract_limit: z
           .number()
           .int()
@@ -92,22 +111,50 @@ export function createServer(library: Library): McpServer {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ folder, extract_limit }, extra) => {
+    async ({ folder, photos, extract_limit }, extra) => {
       try {
-        const progressToken = extra._meta?.progressToken;
-        const summary = await library.scan({
-          folder,
-          extractLimit: extract_limit,
-          onProgress: progressToken === undefined
-            ? undefined
-            : (done, total) => {
-                void extra.sendNotification({
-                  method: "notifications/progress",
-                  params: { progressToken, progress: done, total, message: `Extracted ${done}/${total}` },
-                });
-              },
-        });
-        return json(summary);
+        return json(await library.scan({ folder, photos, extractLimit: extract_limit, onProgress: progressReporter(extra) }));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "connect_photos",
+    {
+      title: "Connect the Photos library",
+      description:
+        "Connects the user's Photos library: the Screenshots album, including iPhone screenshots synced " +
+        "through iCloud Photos. The first time, macOS asks the user to let \"Memvana Shot\" access Photos, so " +
+        "call this only after the user agrees, and tell them to expect the prompt. With access, it adds " +
+        "Photos as a source and scans it like scan_screenshots (extracting up to `extract_limit`, newest " +
+        "first). Read-only: nothing in Photos is changed. Without access it returns `fix`; with " +
+        "`open_settings` it also opens the Photos pane of System Settings.",
+      inputSchema: {
+        extract_limit: z
+          .number()
+          .int()
+          .min(0)
+          .max(5000)
+          .optional()
+          .describe("Max screenshots to extract this call (default 250; 0 = discover only)."),
+        open_settings: z
+          .boolean()
+          .optional()
+          .describe("If access is off, open System Settings > Privacy & Security > Photos (only when the user asks)."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ extract_limit, open_settings }, extra) => {
+      try {
+        return json(
+          await library.connectPhotos({
+            extractLimit: extract_limit,
+            openSettings: open_settings,
+            onProgress: progressReporter(extra),
+          }),
+        );
       } catch (err) {
         return failure(err);
       }
@@ -417,7 +464,8 @@ export function createServer(library: Library): McpServer {
       title: "Open original screenshot",
       description:
         "Opens the original screenshot file on the user's Mac in its default app (usually Preview), or " +
-        "reveals it in Finder. Use when the user wants to see or use the actual file.",
+        "reveals it in Finder. A screenshot from Photos opens as an exported copy (it has no file to " +
+        "reveal). Use when the user wants to see or use the actual image.",
       inputSchema: {
         id: z.string(),
         reveal: z.boolean().optional().describe("Reveal in Finder instead of opening (default false)."),
