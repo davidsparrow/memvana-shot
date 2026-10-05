@@ -9,6 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { type Db, now, transaction } from "./db.ts";
+import { NAME_SQL } from "./names.ts";
 import { reindexScreenshot, reindexTagged } from "./search-index.ts";
 
 export type TagState = "suggested" | "confirmed" | "added" | "rejected";
@@ -340,7 +341,7 @@ export function taggingBatch(db: Db, limit: number): { items: TaggingItem[]; rem
   `;
   const rows = db
     .prepare(`
-      SELECT s.id, s.source_key, COALESCE(u.short_description, a.short_description) AS short_description,
+      SELECT s.id, ${NAME_SQL} AS name, COALESCE(u.short_description, a.short_description) AS short_description,
              COALESCE(u.likely_reason_saved, a.likely_reason_saved) AS likely_reason_saved,
              a.content_type, a.topics
       FROM screenshots s JOIN analyses a ON a.screenshot_id = s.id
@@ -351,11 +352,11 @@ export function taggingBatch(db: Db, limit: number): { items: TaggingItem[]; rem
     .all(limit) as Array<Record<string, any>>;
   const items = rows.map((r) => {
     const tags = tagsFor(db, r.id);
-    const slash = r.source_key.lastIndexOf("/");
+    const slash = r.name.lastIndexOf("/");
     return {
       id: r.id,
-      file_name: slash >= 0 ? r.source_key.slice(slash + 1) : r.source_key,
-      folder: slash >= 0 ? r.source_key.slice(0, slash) : null,
+      file_name: slash >= 0 ? r.name.slice(slash + 1) : r.name,
+      folder: slash >= 0 ? r.name.slice(0, slash) : null,
       short_description: r.short_description,
       likely_reason_saved: r.likely_reason_saved,
       content_type: r.content_type,

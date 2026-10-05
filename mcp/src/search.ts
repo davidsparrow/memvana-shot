@@ -1,4 +1,5 @@
 import type { Db } from "./db.ts";
+import { NAME_SQL } from "./names.ts";
 import { cosine } from "./semantic/vectors.ts";
 import { SEARCH_WEIGHTS } from "./search-index.ts";
 import { listTags, tagKey } from "./tags.ts";
@@ -125,7 +126,7 @@ const FUSION_K = 20;
 const CANDIDATES = 200;
 
 const COLUMNS = `
-  s.id, s.captured_at, s.source_key, a.screenshot_id AS analyzed,
+  s.id, s.captured_at, ${NAME_SQL} AS name, a.screenshot_id AS analyzed,
   COALESCE(u.short_description, a.short_description) AS short_description,
   COALESCE(u.likely_reason_saved, a.likely_reason_saved) AS likely_reason_saved,
   a.content_type, a.topics, a.sensitive, u.screenshot_id AS edited,
@@ -301,7 +302,7 @@ export async function searchScreenshots(
         {
           id: r.id,
           captured_at: r.captured_at,
-          file: r.source_key,
+          file: r.name,
           analyzed: r.analyzed !== null,
           short_description: r.short_description,
           likely_reason_saved: r.likely_reason_saved,

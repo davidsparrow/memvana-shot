@@ -179,4 +179,15 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 6,
+    sql: `
+      -- Screenshots from the Photos library have no file of their own.
+      -- file_name is the name Photos reports, shown and searched in place of
+      -- the meaningless asset id. source_version changes only when the image
+      -- itself can have changed: its size, plus its edit date once edited.
+      ALTER TABLE screenshots ADD COLUMN file_name TEXT;
+      ALTER TABLE screenshots ADD COLUMN source_version TEXT;
+    `,
+  },
 ];
