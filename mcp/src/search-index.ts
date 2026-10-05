@@ -4,7 +4,7 @@ import type { Db } from "./db.ts";
 // by screenshots.search_rowid, holding the *effective* details (the user's
 // edits win over Claude's analysis). Bump SEARCH_INDEX_VERSION whenever the
 // columns, weights or row SQL change; ensureSearchIndex() then rebuilds it.
-export const SEARCH_INDEX_VERSION = 2;
+export const SEARCH_INDEX_VERSION = 3;
 
 // Columns from most to least telling. SEARCH_WEIGHTS gives each column's bm25
 // weight in the same order.
@@ -50,7 +50,7 @@ function indexRowsSql(where: string): string {
         WHERE value NOT IN (SELECT value FROM json_each(COALESCE(u.keywords_removed, '[]')))
       ), '') || ' | ' || COALESCE((SELECT group_concat(value, ' | ') FROM json_each(u.keywords_added)), ''),
       COALESCE((SELECT group_concat(json_extract(value, '$.name'), ' | ') FROM json_each(a.entities)), '')
-        || ' ' || COALESCE(a.source_app, ''),
+        || ' | ' || COALESCE(a.source_app, ''),
       COALESCE(u.detailed_description, a.detailed_description, '') || ' ' || COALESCE(a.content_type, ''),
       COALESCE(e.ocr_text, ''),
       COALESCE((SELECT group_concat(json_extract(value, '$.label'), ' ') FROM json_each(e.labels)), ''),
@@ -85,6 +85,24 @@ export function ensureSearchIndex(db: Db): void {
   }
 }
 
+/**
+ * Counts changes to index rows. The semantic index compares it with the value
+ * it last saw, so it can skip re-checking every screenshot when nothing changed.
+ */
+export function searchGeneration(db: Db): number {
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'search_generation'").get() as
+    | { value: string }
+    | undefined;
+  return Number(row?.value ?? 0);
+}
+
+function bumpSearchGeneration(db: Db): void {
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES ('search_generation', '1') " +
+      "ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+  ).run();
+}
+
 /** Rewrites one screenshot's index row from its current extraction, analysis, edits and tags. */
 export function reindexScreenshot(db: Db, id: string): void {
   db.prepare(`
@@ -98,6 +116,7 @@ export function reindexScreenshot(db: Db, id: string): void {
   if (!row?.search_rowid) return;
   db.prepare("DELETE FROM search_index WHERE rowid = ?").run(row.search_rowid);
   db.prepare(indexRowsSql("s.id = ?")).run(id);
+  bumpSearchGeneration(db);
 }
 
 /** Reindexes every screenshot carrying a tag (after a rename, merge or delete). */
@@ -117,6 +136,7 @@ export function rebuildSearchIndex(db: Db): number {
     WHERE search_rowid IS NULL AND id IN (SELECT screenshot_id FROM extractions)
   `);
   db.exec(indexRowsSql("1"));
+  bumpSearchGeneration(db);
   const { n } = db.prepare("SELECT COUNT(*) AS n FROM search_index").get() as { n: number };
   return n;
 }

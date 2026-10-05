@@ -164,4 +164,19 @@ export const migrations: Migration[] = [
       ALTER TABLE screenshots ADD COLUMN ai_tagged_at TEXT;
     `,
   },
+  {
+    version: 5,
+    sql: `
+      -- Meaning vectors from the local embedding model, one per screenshot.
+      -- text_hash identifies the exact text (and model) a vector was made
+      -- from, so any change to a screenshot's details marks it for re-embedding.
+      CREATE TABLE embeddings (
+        screenshot_id TEXT PRIMARY KEY REFERENCES screenshots(id) ON DELETE CASCADE,
+        model         TEXT NOT NULL,
+        text_hash     TEXT NOT NULL,
+        vector        BLOB NOT NULL,
+        embedded_at   TEXT NOT NULL
+      );
+    `,
+  },
 ];
