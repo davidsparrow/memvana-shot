@@ -28,7 +28,7 @@ const text = (result: Awaited<ReturnType<Client["callTool"]>>) =>
   (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
 
 describe("MCP server", () => {
-  test("exposes the V0 tools", async () => {
+  test("exposes the tools", async () => {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).sort(), [
       "create_tags",
@@ -36,15 +36,18 @@ describe("MCP server", () => {
       "edit_tag",
       "get_analysis_batch",
       "get_library_stats",
+      "get_related_screenshots",
       "get_screenshot",
       "get_status",
       "get_tagging_batch",
       "list_screenshots",
       "list_tags",
       "open_screenshot",
+      "rebuild_index",
       "save_analyses",
       "scan_screenshots",
       "search_screenshots",
+      "setup_semantic_search",
       "suggest_tags",
       "tag_screenshots",
     ]);

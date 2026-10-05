@@ -1,6 +1,6 @@
 ---
 name: memvana-shot
-description: Use whenever the user asks about their screenshots. That includes finding one they saved ("that screenshot of…", "the one with the weird chair"), asking what they've been screenshotting, saving or researching, tagging or organizing them, correcting a screenshot's details, or setting up or updating Memvana Shot. Works through the memvana-shot MCP tools.
+description: Use whenever the user asks about their screenshots. That includes finding one they saved ("that screenshot of…", "the one with the weird chair"), finding related or similar screenshots, asking what they've been screenshotting, saving or researching, tagging or organizing them, correcting a screenshot's details, or setting up or updating Memvana Shot. Works through the memvana-shot MCP tools.
 ---
 
 # Memvana Shot
@@ -20,7 +20,8 @@ produced on-device. You add the understanding.
 | `get_status` | Check setup, see counts and get suggested next steps. Start here when unsure. |
 | `scan_screenshots` | Register a folder (`folder`) or rescan known folders. Runs on-device extraction in batches (`extract_limit`, default 250). |
 | `get_analysis_batch` / `save_analyses` | Look at screenshots and record what they are and why they were saved. |
-| `search_screenshots` | Find screenshots: `query` holds the user's words, `also` holds your expansion terms. Supports date and content-type filters. |
+| `search_screenshots` | Find screenshots: `query` holds the user's words, `also` holds your expansion terms. Matches by keywords, and by meaning once semantic search is set up. Supports date, tag and content-type filters. |
+| `get_related_screenshots` | "More like this": screenshots related to one, with the reasons (similar subject, looks alike, near-duplicate, shared tags or names, same session). |
 | `get_library_stats` | See what the user has been saving: topics, tags, content types, apps, captures per month. |
 | `list_tags` / `create_tags` / `edit_tag` | The user's tags: list them, create them (with the user's OK), rename, merge, delete, or settle suggestions in bulk. |
 | `tag_screenshots` | Apply the user's tagging decisions: add tags, or remove them (which records a rejection). |
@@ -29,6 +30,12 @@ produced on-device. You add the understanding.
 | `get_screenshot` | Get the full record and the thumbnail for one screenshot. |
 | `open_screenshot` | Open the original in Preview, or reveal it in Finder. |
 | `list_screenshots` | Browse by date or pipeline status. |
+| `setup_semantic_search` | One-time download of the local embedding model, after the user agrees. |
+| `rebuild_index` | Maintenance: rebuild the keyword index (and meaning vectors). Rarely needed. |
+
+The user can also type `/memvana-shot:status`, `/memvana-shot:scan`,
+`/memvana-shot:tags` and `/memvana-shot:rebuild-index`. Natural language works
+for everything, so never ask them to use a command.
 
 ## First run
 
@@ -57,6 +64,8 @@ produced on-device. You add the understanding.
    user's OK (and after their edits), `create_tags` with `proposed_by_ai: true`,
    then tag the analyzed screenshots (see Tags). Skip this if Finder tags were
    imported and already cover their needs.
+8. **Offer semantic search once** if `get_status` shows
+   `semantic_search.state: "not_set_up"` (see Semantic search).
 
 ## Analyzing screenshots
 
@@ -115,6 +124,29 @@ your analysis everywhere, rank high in search, and survive re-analysis. Prefer
 `ignored: true` hides a screenshot the user doesn't want in results. Confirm
 briefly what changed.
 
+## Semantic search
+
+Keyword search works out of the box. Semantic search adds matching by meaning
+("music legend" finds a Jimi Hendrix photo that never says "music") and
+sharper related screenshots. It needs a one-time download, so ask first:
+
+> Want me to turn on search by meaning? It's a one-time download of about
+> 330 MB: Google's EmbeddingGemma model, which runs on your Mac (nothing is
+> uploaded). It's free to use under the Gemma Terms of Use.
+
+Always mention the size, that it runs on their Mac, and the license (Google's
+Gemma Terms of Use), in your own words. Link https://ai.google.dev/gemma/terms
+if they ask, and call `setup_semantic_search`
+only after a yes. It returns at once and downloads in the background; check
+`get_status` when convenient and tell the user when it's ready. Existing
+screenshots are indexed automatically (about a minute per thousand), and new
+or edited ones are kept up to date on their own.
+
+If the user declines, call `setup_semantic_search({ declined: true })` so it
+isn't offered again; set it up later only if they ask. If the state is
+`unsupported` (Intel Macs), explain that keyword search and related
+screenshots still work.
+
 ## Searching
 
 1. **Expand the query.** Put the user's key words in `query`, and 5–15 terms
@@ -125,10 +157,20 @@ briefly what changed.
 2. **Turn time phrases into dates.** Use `after` and `before`, working from
    today's date: "last spring" means after 2026-03, before 2026-06; "in
    February" means the most recent February.
+   Keep doing this with semantic search on: the expansion drives the keyword
+   side, and the `query` alone drives the meaning side, so write `query` as
+   the user's natural phrase.
 3. **Check before answering.** Read each hit's `short_description` and
-   `likely_reason_saved`. If the top results don't clearly fit, search again
-   with a different expansion. For visual queries (colors, layouts, objects),
-   pass `include_images: 3` and look before you claim a match.
+   `likely_reason_saved`. `matched_by` says whether a hit matched keywords,
+   meaning or both; hits matching both are the most reliable. Meaning
+   `similarity` runs low by design: 0.35 to 0.55 is a normal, good match. A
+   meaning-only hit near 0.3 is a loose association, so check it before
+   presenting it as a match. Don't quote similarity numbers to the user. If
+   `semantic.note` says screenshots aren't indexed yet, say results may
+   improve shortly. If the top results don't clearly fit,
+   search again with a different expansion. For visual queries (colors,
+   layouts, objects), pass `include_images: 3` and look before you claim a
+   match.
 4. **Answer like a person who remembers.** Give the best match first, with
    its date, a one-line description and why it fits. Then add a few alternates
    if they're plausible, and offer to open the original. Keep ids in mind for
@@ -140,6 +182,16 @@ briefly what changed.
    them. If nothing fits, say so and suggest other wording. Never invent a
    screenshot.
 
+## Related screenshots
+
+For "more like this", "what else did I save about this?", or a follow-up on a
+screenshot you just found, call `get_related_screenshots` with its id. Each
+result lists its `reasons`, strongest first. Use them in your answer ("three
+more from the same pricing research, captured minutes apart"). `near_duplicate`
+marks copies and re-captures. Mention duplicates when they're relevant, but
+never offer to delete anything. Without semantic search, relatedness uses
+looks, tags, names, topics and dates only, and `note` says so.
+
 ## "What have I been saving?"
 
 Use `get_library_stats`. Add a date range for "lately" or "this month", and
@@ -150,8 +202,11 @@ of dehydrated foods since June"), not lists of files.
 ## Privacy
 
 - Explain the model when asked. The index stays on the Mac and OCR runs
-  on-device. Images are sent to Claude only when it analyzes them or looks at
-  them for a search. There's no Memvana Shot account or server.
+  on-device. Semantic search runs on-device too: the model is downloaded once
+  (from Hugging Face and npm), then runs locally, and no screenshot data is
+  sent anywhere for it. Images
+  are sent to Claude only when it analyzes them or looks at them for a
+  search. There's no Memvana Shot account or server.
 - Never repeat secrets: passwords, verification codes, card or account numbers,
   ID numbers.
 - Results with `sensitive: true` get a generic description ("a bank statement

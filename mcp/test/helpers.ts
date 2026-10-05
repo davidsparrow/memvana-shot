@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import type { z } from "zod";
 import { AnalysisInput } from "../src/analysis.ts";
 import { type Config, resolveHelper } from "../src/config.ts";
-import { Library } from "../src/library.ts";
+import { Library, type LibraryOptions } from "../src/library.ts";
 
 export const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 export const FIXTURES = join(REPO_ROOT, "mcp", "test", "fixtures", "library");
@@ -20,12 +20,12 @@ export interface TempLibrary {
   cleanup: () => void;
 }
 
-export function tempLibrary(): TempLibrary {
+export function tempLibrary(options: LibraryOptions & { modelsDir?: string } = {}): TempLibrary {
   const root = mkdtempSync(join(tmpdir(), "memvana-shot-test-"));
   const folder = join(root, "screenshots");
   cpSync(FIXTURES, folder, { recursive: true });
-  const config: Config = { home: join(root, "home"), pluginRoot: REPO_ROOT };
-  const library = Library.open(config);
+  const config: Config = { home: join(root, "home"), pluginRoot: REPO_ROOT, modelsDir: options.modelsDir };
+  const library = Library.open(config, options);
   return {
     library,
     config,

@@ -77,30 +77,30 @@ describe("tags", needsHelper, () => {
     assert.equal(remaining.length, 3);
   });
 
-  test("tags are searchable, filterable and shown on results", () => {
+  test("tags are searchable, filterable and shown on results", async () => {
     t.library.createTags([{ name: "Kitchen remodel" }]);
     t.library.tagScreenshots([ids.get(RECEIPT)!], { add: ["Kitchen remodel"] });
     t.library.suggestTags([{ id: ids.get(CHIPS)!, tags: ["Kitchen remodel"] }]);
 
-    const byText = t.library.search({ query: "remodel" });
+    const byText = await t.library.search({ query: "remodel" });
     assert.deepEqual(byText.results.map((r) => r.file).sort(), [CHIPS, RECEIPT].sort());
-    const filtered = t.library.search({ tags: ["kitchen remodel"] });
+    const filtered = await t.library.search({ tags: ["kitchen remodel"] });
     assert.equal(filtered.total, 2);
     const receipt = filtered.results.find((r) => r.file === RECEIPT)!;
     assert.deepEqual([receipt.tags, receipt.suggested_tags], [["Kitchen remodel"], []]);
     const chips = filtered.results.find((r) => r.file === CHIPS)!;
     assert.deepEqual([chips.tags, chips.suggested_tags], [[], ["Kitchen remodel"]]);
-    assert.equal(t.library.search({ untagged: true }).total, 3);
+    assert.equal((await t.library.search({ untagged: true })).total, 3);
   });
 
-  test("rename, merge, bulk-confirm and delete", () => {
+  test("rename, merge, bulk-confirm and delete", async () => {
     t.library.createTags([{ name: "Food" }, { name: "Recipes" }]);
     t.library.tagScreenshots([ids.get(CHIPS)!], { add: ["Food"] });
     t.library.suggestTags([{ id: ids.get(RECEIPT)!, tags: ["Food"] }, { id: ids.get(CHIPS)!, tags: ["Recipes"] }]);
 
     t.library.editTag("food", { renameTo: "Snacks" });
     assert.deepEqual(tagStates(CHIPS), { Recipes: "suggested/ai", Snacks: "added/user" });
-    assert.equal(t.library.search({ query: "snacks", tags: ["Snacks"] }).total, 2);
+    assert.equal((await t.library.search({ query: "snacks", tags: ["Snacks"] })).total, 2);
 
     // Renaming onto an existing tag merges, keeping the stronger state.
     const merged = t.library.editTag("Snacks", { renameTo: "recipes" });
@@ -114,7 +114,7 @@ describe("tags", needsHelper, () => {
     const deleted = t.library.editTag("Recipes", { delete: true });
     assert.equal(deleted.screenshots_untagged, 2);
     assert.deepEqual(t.library.listTags(), []);
-    assert.equal(t.library.search({ query: "recipes" }).total, 0);
+    assert.equal((await t.library.search({ query: "recipes" })).total, 0);
     assert.throws(() => t.library.editTag("Recipes", { delete: true }), /No tag named/);
   });
 
@@ -160,7 +160,7 @@ describe("user edits", needsHelper, () => {
     ids = await analyzedLibrary(t);
   });
 
-  test("edits override Claude, are searchable, and survive re-analysis", () => {
+  test("edits override Claude, are searchable, and survive re-analysis", async () => {
     const id = ids.get(CHIPS)!;
     const edited = t.library.edit(id, {
       short_description: "Spuds & Cheese competitor bag",
@@ -173,11 +173,11 @@ describe("user edits", needsHelper, () => {
     assert.ok(edited.details?.keywords.includes("co-packer"));
     assert.ok(!edited.details?.keywords.includes("grocery"));
 
-    assert.equal(t.library.search({ query: "spuds" }).results[0]?.file, CHIPS);
-    assert.equal(t.library.search({ query: "spuds" }).results[0]?.short_description, "Spuds & Cheese competitor bag");
-    assert.equal(t.library.search({ query: "spuds" }).results[0]?.edited, true);
-    assert.equal(t.library.search({ query: "packer structure" }).results[0]?.file, CHIPS, "notes are indexed");
-    assert.equal(t.library.search({ query: "grocery" }).total, 0, "removed keyword no longer matches");
+    assert.equal((await t.library.search({ query: "spuds" })).results[0]?.file, CHIPS);
+    assert.equal((await t.library.search({ query: "spuds" })).results[0]?.short_description, "Spuds & Cheese competitor bag");
+    assert.equal((await t.library.search({ query: "spuds" })).results[0]?.edited, true);
+    assert.equal((await t.library.search({ query: "packer structure" })).results[0]?.file, CHIPS, "notes are indexed");
+    assert.equal((await t.library.search({ query: "grocery" })).total, 0, "removed keyword no longer matches");
 
     t.library.saveAnalyses([AnalysisInput.parse({ id, ...FIXTURE_ANALYSES[CHIPS]!, short_description: "Re-analyzed" })]);
     const after = t.library.get(id)!;
@@ -189,12 +189,12 @@ describe("user edits", needsHelper, () => {
     assert.equal(reverted.user_edits, null, "nothing left to override, so the edit row is dropped");
   });
 
-  test("ignored screenshots disappear from search and stats", () => {
+  test("ignored screenshots disappear from search and stats", async () => {
     t.library.edit(ids.get(RECEIPT)!, { ignored: true });
-    assert.equal(t.library.search({ query: "coffee" }).total, 0);
+    assert.equal((await t.library.search({ query: "coffee" })).total, 0);
     assert.equal(t.library.stats().totals.screenshots, 4);
     t.library.edit(ids.get(RECEIPT)!, { ignored: false });
-    assert.equal(t.library.search({ query: "coffee" }).total, 1);
+    assert.equal((await t.library.search({ query: "coffee" })).total, 1);
     assert.throws(() => t.library.edit("nope", { notes: "x" }), /No screenshot/);
   });
 

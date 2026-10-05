@@ -10,6 +10,8 @@ export interface Config {
   pluginRoot: string;
   /** Explicit helper binary path; otherwise resolved under pluginRoot. */
   helperPath?: string;
+  /** Where the semantic-search model and runtime are downloaded (default: home/models). */
+  modelsDir?: string;
 }
 
 /** Built-in defaults, overridable with MEMVANA_SHOT_HOME / MEMVANA_SHOT_HELPER. */
@@ -20,6 +22,7 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : join(homedir(), "Library", "Application Support", "Memvana Shot"),
     pluginRoot: env.CLAUDE_PLUGIN_ROOT || defaultPluginRoot(),
     helperPath: env.MEMVANA_SHOT_HELPER ? expandHome(env.MEMVANA_SHOT_HELPER) : undefined,
+    modelsDir: env.MEMVANA_SHOT_MODELS ? expandHome(env.MEMVANA_SHOT_MODELS) : undefined,
   };
 }
 
@@ -34,6 +37,10 @@ export function dbPath(config: Config): string {
 
 export function thumbsDir(config: Config): string {
   return join(config.home, "thumbs");
+}
+
+export function modelsDir(config: Config): string {
+  return config.modelsDir ?? join(config.home, "models");
 }
 
 /** Where shot-helper may live, in priority order. */

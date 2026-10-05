@@ -5,6 +5,8 @@ import { assertNodeVersion } from "../node-version.ts";
 
 assertNodeVersion();
 const { Library, STATUSES } = await import("../library.ts");
+const { SEARCH_MODES } = await import("../search.ts");
+const { MODEL } = await import("../semantic/model.ts");
 
 const USAGE = `usage: memvana-shot <command> [options]
 
@@ -12,9 +14,16 @@ const USAGE = `usage: memvana-shot <command> [options]
   scan [folder] [--limit N]      discover new/changed screenshots and extract up to N (default 250)
   list [--status S] [--limit N]  recent screenshots (S: ${STATUSES.join("|")})
   get <id>                       one screenshot's full record
-  search <query> [--also a,b] [--type T] [--after D] [--before D] [--limit N]
+  search <query> [--also a,b] [--type T] [--after D] [--before D] [--limit N] [--mode M]
+                                 M: ${SEARCH_MODES.join("|")} (auto adds meaning when set up)
+  related <id> [--limit N]       screenshots related to one, and why
   stats [--after D] [--before D] what you've been screenshotting
   open <id> [--reveal]           open the original (or reveal it in Finder)
+
+  semantic                       semantic search status
+  semantic setup                 download the local embedding model (one time, ~330 MB)
+  index                          embed new or changed screenshots now
+  rebuild-index [--semantic]     rebuild the keyword index (and every meaning vector)
 
   tags                           list tags with counts
   tag <id> <tag...>              add tags to a screenshot
@@ -36,6 +45,8 @@ const { positionals, values } = parseArgs({
     after: { type: "string" },
     before: { type: "string" },
     reveal: { type: "boolean" },
+    mode: { type: "string" },
+    semantic: { type: "boolean" },
     title: { type: "string" },
     description: { type: "string" },
     reason: { type: "string" },
@@ -55,6 +66,8 @@ if (!command || values.help) {
 
 const library = Library.open();
 const print = (value: unknown) => process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+const progress = (label: string) => (done: number, total: number) =>
+  process.stderr.write(`\r${label} ${done}/${total}`);
 const limit = values.limit === undefined ? undefined : Number(values.limit);
 
 try {
@@ -85,18 +98,57 @@ try {
       print(detail);
       break;
     }
-    case "search":
+    case "search": {
+      const mode = values.mode as (typeof SEARCH_MODES)[number] | undefined;
+      if (mode && !SEARCH_MODES.includes(mode)) throw new Error(`unknown mode ${mode}`);
       print(
-        library.search({
+        await library.search({
           query: positionals.slice(1).join(" "),
           also: values.also?.split(",").map((s) => s.trim()).filter(Boolean),
           contentType: values.type,
           after: values.after,
           before: values.before,
           limit,
+          mode,
         }),
       );
       break;
+    }
+    case "related":
+      if (!arg) throw new Error("related needs an id");
+      print(library.related(arg, { limit }));
+      break;
+    case "semantic":
+      if (arg === "setup") {
+        process.stderr.write(
+          `${MODEL.name} by ${MODEL.publisher} is provided under the ${MODEL.license}: ${MODEL.termsUrl}\n`,
+        );
+        await library.semantic.install((p) =>
+          process.stderr.write(`\rdownloading ${Math.round(p.received / 1e6)}/${Math.round(p.total / 1e6)} MB   `),
+        );
+        process.stderr.write("\n");
+        print(await library.semantic.refresh(progress("indexing")));
+        process.stderr.write("\n");
+      } else if (arg) {
+        throw new Error(`unknown semantic command ${arg}`);
+      }
+      print(library.semantic.status());
+      break;
+    case "index":
+      if (!library.semantic.ready) throw new Error("semantic search isn't set up: run `semantic setup` first");
+      print(await library.semantic.refresh(progress("indexing")));
+      process.stderr.write("\n");
+      break;
+    case "rebuild-index": {
+      const rebuilt = await library.rebuildIndex({ semantic: values.semantic === true });
+      if (values.semantic && library.semantic.ready) {
+        await library.semantic.refresh(progress("indexing"));
+        process.stderr.write("\n");
+        rebuilt.semantic_search = library.semantic.status();
+      }
+      print(rebuilt);
+      break;
+    }
     case "stats":
       print(library.stats({ after: values.after, before: values.before }));
       break;
