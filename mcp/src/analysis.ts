@@ -5,6 +5,7 @@ import { z } from "zod";
 import { type Db, now, transaction } from "./db.ts";
 import { type NameHint, nameHint } from "./names.ts";
 import { reindexScreenshot } from "./search-index.ts";
+import { suggestTags, vocabulary } from "./tags.ts";
 
 /** Bump when the guide or schema changes enough that old analyses are worth redoing. */
 export const ANALYSIS_VERSION = 1;
@@ -87,6 +88,9 @@ Fields
   verification codes, card, bank or account numbers, government IDs, medical
   details, private conversations, home addresses.
 - confidence: 0-1, how sure you are of your interpretation.
+- tags: names from tag_vocabulary (in the batch header) that clearly fit. Leave
+  it empty when none fits, and never invent tag names. Tags are the user's
+  own top-level groups, so be conservative.
 
 Rules
 - Describe only what is visible. Don't guess names, prices or dates you can't read.
@@ -116,6 +120,11 @@ export const AnalysisInput = z.object({
   keywords: z.array(trimmed(60)).max(25).default([]),
   sensitive: z.boolean().default(false),
   confidence: z.number().min(0).max(1),
+  tags: z
+    .array(z.string().trim().min(1).max(40))
+    .max(8)
+    .default([])
+    .describe("Existing tag names (from tag_vocabulary) that clearly fit."),
 });
 export type AnalysisInput = z.infer<typeof AnalysisInput>;
 
@@ -198,6 +207,9 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
 export interface SaveResult {
   saved: number;
   errors: Array<{ id: string; error: string }>;
+  /** Tag suggestions recorded alongside the analyses. */
+  tags_suggested?: number;
+  tag_errors?: Array<{ id: string; error: string }>;
 }
 
 export function saveAnalyses(db: Db, analyses: AnalysisInput[], model?: string): SaveResult {
@@ -223,6 +235,7 @@ export function saveAnalyses(db: Db, analyses: AnalysisInput[], model?: string):
     "UPDATE screenshots SET status = 'analyzed', analysis_claimed_until = NULL WHERE id = ?",
   );
 
+  const hasVocabulary = vocabulary(db).length > 0;
   transaction(db, () => {
     for (const a of analyses) {
       const row = lookup.get(a.id) as { content_hash: string | null; extracted: string | null } | undefined;
@@ -254,6 +267,13 @@ export function saveAnalyses(db: Db, analyses: AnalysisInput[], model?: string):
       markAnalyzed.run(a.id);
       reindexScreenshot(db, a.id);
       result.saved++;
+      // With no tags defined yet there was nothing to choose from, so leave the
+      // screenshot for a later tagging pass instead of marking it considered.
+      if (hasVocabulary) {
+        const tagged = suggestTags(db, [{ id: a.id, tags: a.tags ?? [], confidence: a.confidence }]);
+        result.tags_suggested = (result.tags_suggested ?? 0) + tagged.suggested;
+        if (tagged.errors.length) (result.tag_errors ??= []).push(...tagged.errors);
+      }
     }
   });
   return result;

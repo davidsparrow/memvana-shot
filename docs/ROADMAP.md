@@ -18,9 +18,12 @@ is deliberately not a general photo manager.
 
 ## V0.5: Persistent screenshot engine
 
-- [ ] Categories that Claude proposes and you can rename, merge, create, or remove
-- [ ] Persistent corrections that outweigh AI guesses (suggested, confirmed, assigned, rejected)
-- [ ] Vector retrieval combined with keyword search
+- [x] Tags: Claude proposes a starter set and suggests per screenshot; you create, rename, merge, or remove them
+- [x] Persistent decisions that outweigh AI guesses (suggested, confirmed, added, rejected)
+- [x] Finder tags imported on every scan (writing back to Finder: later, opt-in)
+- [x] Your own edits and notes override the AI's details, are searchable, and survive re-analysis
+- [x] Descriptive file and folder names used as evidence in analysis and search
+- [ ] Semantic (vector) retrieval combined with keyword search, using a local embedding model
 - [ ] Related screenshots (semantic and visual similarity)
 - [ ] Library statistics and slash commands (`status`, `scan`, `categories`, `rebuild-index`)
 

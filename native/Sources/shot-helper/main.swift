@@ -8,11 +8,14 @@
 //   shot-helper extract --thumb-dir DIR [--max-dim 1024] [--concurrency 4]
 //       stdin:  {"id": "...", "path": "/abs/file.png"}   one job per line
 //       stdout: one JSON result per job, in completion order
+//   shot-helper finder-tags
+//       stdin:  the same job lines
+//       stdout: {"id": "...", "tags": ["Red", "Recipes"]} per job, in input order
 
 import Foundation
 import Vision
 
-let helperVersion = "0.1.0"
+let helperVersion = "0.2.0"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("shot-helper: \(message)\n".utf8))
@@ -32,7 +35,7 @@ func versionInfo() -> [String: Any] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-    fail("usage: shot-helper <version|extract> [options]")
+    fail("usage: shot-helper <version|extract|finder-tags> [options]")
 }
 args.removeFirst()
 
@@ -67,6 +70,17 @@ case "extract":
         fail("cannot create thumb dir: \(error.localizedDescription)")
     }
     runExtract(jobs: readJobs(), options: options)
+
+case "finder-tags":
+    for job in readJobs() {
+        let url = URL(fileURLWithPath: job.path)
+        do {
+            let tags = try url.resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
+            JSONLines.shared.write(["id": job.id, "ok": true, "tags": tags])
+        } catch {
+            JSONLines.shared.write(["id": job.id, "ok": false, "error": error.localizedDescription])
+        }
+    }
 
 default:
     fail("unknown command \(command)")

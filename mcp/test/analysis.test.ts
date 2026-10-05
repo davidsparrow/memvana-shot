@@ -64,7 +64,7 @@ describe("analysis pipeline", needsHelper, () => {
     const status = await t.library.status();
     assert.equal(status.counts.analyzed, 5);
     assert.equal(status.counts.extracted, 0);
-    assert.match(status.next_steps.join(" "), /up to date/);
+    assert.match(status.next_steps.join(" "), /No tags yet/);
 
     const chips = t.library.get(ids.get(CHIPS)!)!;
     assert.equal(chips.status, "analyzed");
@@ -77,8 +77,8 @@ describe("analysis pipeline", needsHelper, () => {
   test("unknown ids are reported per item without blocking the rest", async () => {
     const ids = await analyzedLibrary(t);
     const result = t.library.saveAnalyses([
-      { id: "missing", ...FIXTURE_ANALYSES[CHIPS]! } as AnalysisInput,
-      { id: ids.get(CHIPS)!, ...FIXTURE_ANALYSES[CHIPS]!, short_description: "Revised" } as AnalysisInput,
+      AnalysisInput.parse({ id: "missing", ...FIXTURE_ANALYSES[CHIPS]! }),
+      AnalysisInput.parse({ id: ids.get(CHIPS)!, ...FIXTURE_ANALYSES[CHIPS]!, short_description: "Revised" }),
     ]);
     assert.equal(result.saved, 1);
     assert.deepEqual(result.errors, [{ id: "missing", error: "unknown screenshot id" }]);

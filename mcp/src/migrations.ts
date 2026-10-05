@@ -3,8 +3,9 @@
 // IDs are stable UUIDs that are never reused: user corrections, categories and
 // any future importer key off screenshots.id, so a screenshot keeps its id
 // across rescans, renames (matched by content hash) and source changes.
-
-import { CREATE_SEARCH_INDEX, indexRowsSql } from "./search-index.ts";
+//
+// Migrations hold tables only. The full-text index is derived data, so it is
+// (re)built by ensureSearchIndex() whenever its definition changes.
 
 export interface Migration {
   version: number;
@@ -106,20 +107,61 @@ export const migrations: Migration[] = [
       -- receive the same screenshots.
       ALTER TABLE screenshots ADD COLUMN analysis_claimed_until TEXT;
 
+      -- Stable integer key for the search index row (rowids can change on VACUUM).
       ALTER TABLE screenshots ADD COLUMN search_rowid INTEGER;
       CREATE UNIQUE INDEX screenshots_search_rowid ON screenshots (search_rowid);
-      ${CREATE_SEARCH_INDEX}
-      UPDATE screenshots SET search_rowid = rowid WHERE id IN (SELECT screenshot_id FROM extractions);
-      ${indexRowsSql("1")};
     `,
   },
   {
+    // Formerly a search-index rebuild; that now lives in ensureSearchIndex().
     version: 3,
-    // The filename column now holds meaningful name words (name_terms) instead
-    // of the raw path, so rebuild every index row.
+    sql: "",
+  },
+  {
+    version: 4,
     sql: `
-      DELETE FROM search_index;
-      ${indexRowsSql("1")};
+      -- Tags are the user's top-level grouping. A tag can come from the user,
+      -- from Claude (approved by the user), or from Finder.
+      CREATE TABLE tags (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        name_key    TEXT NOT NULL UNIQUE,
+        description TEXT,
+        origin      TEXT NOT NULL CHECK (origin IN ('user', 'ai', 'finder')),
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+      );
+
+      -- One row per screenshot/tag pair. 'suggested' is Claude's guess;
+      -- 'confirmed' and 'added' come from the user; 'rejected' means the user
+      -- said no, and Claude must never suggest that tag for that screenshot again.
+      CREATE TABLE screenshot_tags (
+        screenshot_id TEXT NOT NULL REFERENCES screenshots(id) ON DELETE CASCADE,
+        tag_id        TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+        state         TEXT NOT NULL CHECK (state IN ('suggested', 'confirmed', 'added', 'rejected')),
+        source        TEXT NOT NULL CHECK (source IN ('ai', 'user', 'finder')),
+        confidence    REAL,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        PRIMARY KEY (screenshot_id, tag_id)
+      );
+      CREATE INDEX screenshot_tags_tag ON screenshot_tags (tag_id, state);
+
+      -- The user's own edits. They override Claude's analysis field by field
+      -- and survive re-analysis.
+      CREATE TABLE user_edits (
+        screenshot_id        TEXT PRIMARY KEY REFERENCES screenshots(id) ON DELETE CASCADE,
+        short_description    TEXT,
+        detailed_description TEXT,
+        likely_reason_saved  TEXT,
+        notes                TEXT,
+        keywords_added       TEXT NOT NULL DEFAULT '[]',
+        keywords_removed     TEXT NOT NULL DEFAULT '[]',
+        updated_at           TEXT NOT NULL
+      );
+
+      -- When Claude last considered this screenshot for tag suggestions.
+      ALTER TABLE screenshots ADD COLUMN ai_tagged_at TEXT;
     `,
   },
 ];

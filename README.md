@@ -11,10 +11,10 @@ You can then ask in plain language:
 - "What have I been researching about pickleball equipment?"
 - "What subjects do I keep coming back to?"
 
-> **Status: early build (V0).** Folder ingestion, on-device extraction,
-> Claude-written understanding and search work today. Categories,
-> corrections and the native Photos connection come next. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: early build (V0.5).** Folder ingestion, on-device extraction,
+> Claude-written understanding, search, tags (including Finder tags) and
+> your own edits work today. Semantic search and the native Photos
+> connection come next. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
@@ -32,9 +32,17 @@ Claude ── Memvana Shot plugin ──┬── Skill             (how Claude 
 2. **Understand.** Claude looks at each screenshot and records what it shows,
    *why you probably saved it*, its topics, and search keywords for things
    the text doesn't say (colors, styles, synonyms).
-3. **Ask.** Search is full-text with stemming across all of that. Claude
-   expands your words with related terms, so "packaging inspiration" finds a
-   chip bag that never uses the word "packaging".
+3. **Ask.** Search is full-text with stemming across all of that, including
+   descriptive file and folder names. Claude expands your words with related
+   terms, so "packaging inspiration" finds a chip bag that never uses the word
+   "packaging".
+4. **Organize.** Tags are your own top-level groups. Claude proposes a starter
+   set and suggests tags per screenshot. You confirm, add or remove them by
+   asking, and tags you set in Finder are imported automatically. Your
+   choices always win over Claude's suggestions.
+5. **Correct.** Tell Claude what a screenshot really is ("that's the supplier
+   I picked"). Your notes and edits override the AI's description, rank high
+   in search, and survive re-analysis.
 
 - **Local-first.** No account and no Memvana Shot server. Your index lives in
   `~/Library/Application Support/Memvana Shot/`.
@@ -60,6 +68,7 @@ an overview of your recurring subjects. After that, ask anything:
 
 > Find the screenshot of that tortilla chip bag with the yellow label.
 > What have I been screenshotting since June?
+> Tag those three as Kitchen remodel, and add a note to the first one: "ask about lead time".
 
 ## Development
 
@@ -72,6 +81,7 @@ npm test
 node mcp/dist/cli.mjs scan ~/Desktop
 node mcp/dist/cli.mjs status
 node mcp/dist/cli.mjs search "order receipt"
+node mcp/dist/cli.mjs tags
 ```
 
 To load the plugin into Claude Code from a local checkout:

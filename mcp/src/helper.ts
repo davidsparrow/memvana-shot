@@ -66,11 +66,42 @@ export async function runExtract(
   options: ExtractOptions,
   onResult: (result: ExtractResult) => void,
 ): Promise<void> {
-  if (jobs.length === 0) return;
   const args = ["extract", "--thumb-dir", options.thumbDir];
   if (options.maxDim) args.push("--max-dim", String(options.maxDim));
   if (options.concurrency) args.push("--concurrency", String(options.concurrency));
+  await streamJobs(helper, args, jobs, (line) => {
+    let parsed: ExtractResult;
+    try {
+      parsed = JSON.parse(line) as ExtractResult;
+    } catch {
+      parsed = { ok: false, error: `unparseable helper output: ${line.slice(0, 200)}` };
+    }
+    onResult(parsed);
+  });
+}
 
+/** Reads each file's Finder tags. Files that can't be read are left out. */
+export async function readFinderTags(helper: string, jobs: ExtractJob[]): Promise<Map<string, string[]>> {
+  const tags = new Map<string, string[]>();
+  await streamJobs(helper, ["finder-tags"], jobs, (line) => {
+    try {
+      const r = JSON.parse(line) as { id: string; ok: boolean; tags?: string[] };
+      if (r.ok && r.id) tags.set(r.id, r.tags ?? []);
+    } catch {
+      // ignore unparseable lines
+    }
+  });
+  return tags;
+}
+
+/** Runs a helper command that reads job lines on stdin and writes one JSON line per job. */
+async function streamJobs(
+  helper: string,
+  args: string[],
+  jobs: ExtractJob[],
+  onLine: (line: string) => void,
+): Promise<void> {
+  if (jobs.length === 0) return;
   const child = spawn(helper, args, { stdio: ["pipe", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.setEncoding("utf8");
@@ -87,14 +118,7 @@ export async function runExtract(
   const consumed = (async () => {
     try {
       for await (const line of lines) {
-        if (!line.trim()) continue;
-        let parsed: ExtractResult;
-        try {
-          parsed = JSON.parse(line) as ExtractResult;
-        } catch {
-          parsed = { ok: false, error: `unparseable helper output: ${line.slice(0, 200)}` };
-        }
-        onResult(parsed);
+        if (line.trim()) onLine(line);
       }
     } catch (err) {
       child.kill();
@@ -108,6 +132,6 @@ export async function runExtract(
 
   const [code] = await Promise.all([exited, consumed]);
   if (code !== 0) {
-    throw new Error(`shot-helper exited with code ${code}: ${stderr.trim()}`);
+    throw new Error(`shot-helper ${args[0]} exited with code ${code}: ${stderr.trim()}`);
   }
 }
