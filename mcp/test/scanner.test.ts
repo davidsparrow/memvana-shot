@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { type Db, getMeta, openDb, schemaVersion } from "../src/db.ts";
+import { migrations } from "../src/migrations.ts";
 import { discoverFolder, ensureFolderSource, reconcileFolder } from "../src/scanner.ts";
 
 let root: string;
@@ -25,7 +26,7 @@ function touch(path: string, content = "x"): void {
 
 describe("database", () => {
   test("migrates once and keeps a stable library id", () => {
-    assert.equal(schemaVersion(db), 1);
+    assert.equal(schemaVersion(db), migrations.at(-1)?.version);
     const id = getMeta(db, "library_id");
     assert.match(id ?? "", /^[0-9a-f-]{36}$/);
     db.close();

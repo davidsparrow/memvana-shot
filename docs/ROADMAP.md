@@ -9,15 +9,21 @@ is deliberately not a general photo manager.
 - [x] On-device OCR, Vision labels, thumbnails, and visual fingerprints (Apple Vision)
 - [x] Local SQLite library with stable IDs, capture dates, and device metadata
 - [x] Incremental rescans: only new or changed files are processed; renamed files keep their identity
-- [ ] Claude-written understanding for each screenshot: description, *likely reason saved*, entities, topics
-- [ ] Natural-language search across OCR and AI understanding
-- [ ] Open the original screenshot
+- [x] Claude-written understanding for each screenshot: description, *likely reason saved*, entities, topics, keywords
+- [x] Batch analysis by a dedicated subagent, with parallel batches that never overlap
+- [x] Natural-language search across OCR and AI understanding, with Claude-driven query expansion
+- [x] Library overview: top topics, content types, apps, captures per month
+- [x] Open the original screenshot, or reveal it in Finder
+- [x] Edited screenshots are re-analyzed automatically
 
 ## V0.5: Persistent screenshot engine
 
-- [ ] Categories that Claude proposes and you can rename, merge, create, or remove
-- [ ] Persistent corrections that outweigh AI guesses (suggested, confirmed, assigned, rejected)
-- [ ] Vector retrieval combined with keyword search
+- [x] Tags: Claude proposes a starter set and suggests per screenshot; you create, rename, merge, or remove them
+- [x] Persistent decisions that outweigh AI guesses (suggested, confirmed, added, rejected)
+- [x] Finder tags imported on every scan (writing back to Finder: later, opt-in)
+- [x] Your own edits and notes override the AI's details, are searchable, and survive re-analysis
+- [x] Descriptive file and folder names used as evidence in analysis and search
+- [ ] Semantic (vector) retrieval combined with keyword search, using a local embedding model
 - [ ] Related screenshots (semantic and visual similarity)
 - [ ] Library statistics and slash commands (`status`, `scan`, `categories`, `rebuild-index`)
 

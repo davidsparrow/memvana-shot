@@ -3,6 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { migrations } from "./migrations.ts";
+import { nameTerms } from "./names.ts";
+import { ensureSearchIndex } from "./search-index.ts";
 
 export type Db = DatabaseSync;
 
@@ -22,7 +24,10 @@ export function openDb(path: string): Db {
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
   `);
+  // Used by the search index (and its migrations) to index meaningful name words.
+  db.function("name_terms", { deterministic: true }, (key) => nameTerms(String(key ?? "")));
   migrate(db);
+  ensureSearchIndex(db);
   return db;
 }
 
@@ -58,8 +63,21 @@ function migrate(db: Db): void {
   }
 }
 
+const depth = new WeakMap<Db, number>();
+
+/** Runs fn in a transaction. Nested calls join the outer transaction. */
 export function transaction<T>(db: Db, fn: () => T): T {
+  const level = depth.get(db) ?? 0;
+  if (level > 0) {
+    depth.set(db, level + 1);
+    try {
+      return fn();
+    } finally {
+      depth.set(db, level);
+    }
+  }
   db.exec("BEGIN IMMEDIATE");
+  depth.set(db, 1);
   try {
     const result = fn();
     db.exec("COMMIT");
@@ -67,6 +85,8 @@ export function transaction<T>(db: Db, fn: () => T): T {
   } catch (err) {
     db.exec("ROLLBACK");
     throw err;
+  } finally {
+    depth.set(db, 0);
   }
 }
 
