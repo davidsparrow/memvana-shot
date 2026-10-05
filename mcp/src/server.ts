@@ -5,17 +5,23 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { ANALYSIS_GUIDE, AnalysisInput, CONTENT_TYPES } from "./analysis.ts";
 import { Library, STATUSES } from "./library.ts";
+import { SEARCH_MODES } from "./search.ts";
+import { cleanUpAbandonedDownloads } from "./semantic/install.ts";
+import { DOWNLOAD_BYTES } from "./semantic/model.ts";
 import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS = `Memvana Shot keeps a local, persistent index of the user's screenshots on their Mac.
 Pipeline: scan_screenshots (discover + on-device OCR/thumbnails) → get_analysis_batch / save_analyses (you look
 at each screenshot and record what it is and why it was likely saved) → search_screenshots and
 get_library_stats answer questions. Call get_status when unsure what to do next; it lists next steps.
-Search with the user's words in \`query\` plus your own synonyms and visual descriptors in \`also\`.
+Search with the user's words in \`query\` plus your own synonyms and visual descriptors in \`also\`. With semantic
+search set up, search also matches by meaning, and get_related_screenshots finds screenshots related to one.
 Tags are the user's own top-level groups: suggest them freely with suggest_tags, but only create, rename,
 merge or delete tags when the user asks or agrees. The user's tag decisions and edits always win.
 Screenshots are personal: never repeat secrets (passwords, codes, account numbers) and never claim to have
 seen an image you have not retrieved.`;
+
+const DOWNLOAD_MB = Math.round(DOWNLOAD_BYTES / 1_000_000);
 
 function json(value: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
@@ -23,6 +29,21 @@ function json(value: unknown): CallToolResult {
 
 function failure(err: unknown): CallToolResult {
   return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
+}
+
+/** Appends thumbnails for the first `count` ids, so Claude can check them visually. */
+async function attachThumbnails(library: Library, result: CallToolResult, ids: string[], count = 0): Promise<void> {
+  for (const id of ids.slice(0, count)) {
+    const thumb = library.get(id, { ocrMaxChars: 0 })?.thumb_path;
+    if (!thumb) continue;
+    try {
+      const data = await readFile(thumb);
+      result.content.push({ type: "text", text: `Thumbnail for ${id}:` });
+      result.content.push({ type: "image", data: data.toString("base64"), mimeType: "image/jpeg" });
+    } catch {
+      // A missing thumbnail just means no preview for this one.
+    }
+  }
 }
 
 export function createServer(library: Library): McpServer {
@@ -34,8 +55,8 @@ export function createServer(library: Library): McpServer {
       title: "Library status",
       description:
         "Where the screenshot library lives, whether the native helper is ready, registered folders, " +
-        "and how many screenshots are pending, extracted, analyzed, missing or in error. " +
-        "When no folders are registered it suggests likely screenshot folders.",
+        "how many screenshots are pending, extracted, analyzed, missing or in error, and whether semantic " +
+        "search is set up and indexed. When no folders are registered it suggests likely screenshot folders.",
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
@@ -235,12 +256,13 @@ export function createServer(library: Library): McpServer {
     {
       title: "Search screenshots",
       description:
-        "Full-text search over each screenshot's description, likely reason saved, topics, keywords, entities, " +
-        "OCR text, Vision labels and file name, ranked by relevance. Put the user's words in `query`. Put " +
-        "your own expansion in `also`: synonyms, related concepts and visual descriptors, so conceptual " +
-        "searches work even when the words never appear in the screenshot. Terms are OR-ed; screenshots " +
-        "matching more terms rank higher. Without query terms it lists screenshots matching the filters, " +
-        "newest first.",
+        "Searches each screenshot's description, likely reason saved, the user's notes, tags, topics, keywords, " +
+        "entities, OCR text and file name. Keyword matching uses `query` plus your expansion terms in `also` " +
+        "(synonyms, related concepts, visual descriptors), OR-ed so screenshots matching more terms rank " +
+        "higher. When semantic search is set up, results also match by meaning (the `query` is embedded " +
+        "locally) and the two rankings are fused; each hit says whether it `matched_by` keywords, meaning or " +
+        "both, with its meaning `similarity`. `semantic.note` explains when meaning matching didn't run. " +
+        "Without query terms it lists screenshots matching the filters, newest first.",
       inputSchema: {
         query: z.string().max(500).optional().describe('The user\'s words. "Quoted phrases" match exactly.'),
         also: z
@@ -255,6 +277,10 @@ export function createServer(library: Library): McpServer {
         before: z.string().optional().describe("Captured before (exclusive), same formats."),
         limit: z.number().int().min(1).max(100).optional().describe("Default 20."),
         offset: z.number().int().min(0).optional(),
+        mode: z
+          .enum(SEARCH_MODES)
+          .optional()
+          .describe("auto (default): keywords plus meaning when available. keyword or semantic: one kind only."),
         include_images: z
           .number()
           .int()
@@ -265,24 +291,96 @@ export function createServer(library: Library): McpServer {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ query, also, content_type, tags, untagged, after, before, limit, offset, include_images }) => {
+    async ({ query, also, content_type, tags, untagged, after, before, limit, offset, mode, include_images }) => {
       try {
-        const found = library.search({
-          query, also, contentType: content_type, tags, untagged, after, before, limit, offset,
+        const found = await library.search({
+          query, also, contentType: content_type, tags, untagged, after, before, limit, offset, mode,
         });
         const result = json(found);
-        for (const hit of found.results.slice(0, include_images ?? 0)) {
-          const thumb = library.get(hit.id, { ocrMaxChars: 0 })?.thumb_path;
-          if (!thumb) continue;
-          try {
-            const data = await readFile(thumb);
-            result.content.push({ type: "text", text: `Thumbnail for ${hit.id}:` });
-            result.content.push({ type: "image", data: data.toString("base64"), mimeType: "image/jpeg" });
-          } catch {
-            // A missing thumbnail just means no preview for this hit.
-          }
-        }
+        await attachThumbnails(library, result, found.results.map((hit) => hit.id), include_images);
         return result;
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_related_screenshots",
+    {
+      title: "Related screenshots",
+      description:
+        "Screenshots related to one screenshot, strongest first, each with the reasons that connect them: " +
+        "similar subject (meaning, when semantic search is set up), looks alike or near-duplicate (visual " +
+        "fingerprint), shared tags, names or topics, captured minutes apart, or the same folder. Use for " +
+        "\"more like this\", \"what else did I save about this?\" and spotting duplicates.",
+      inputSchema: {
+        id: z.string().describe("The screenshot to start from."),
+        limit: z.number().int().min(1).max(30).optional().describe("Default 8."),
+        include_images: z
+          .number()
+          .int()
+          .min(0)
+          .max(6)
+          .optional()
+          .describe("Attach thumbnails of the top N related screenshots (default 0)."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ id, limit, include_images }) => {
+      try {
+        const related = library.related(id, { limit });
+        const result = json(related);
+        await attachThumbnails(library, result, related.results.map((hit) => hit.id), include_images);
+        return result;
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "setup_semantic_search",
+    {
+      title: "Set up semantic search",
+      description:
+        "Starts the one-time download that enables search by meaning and better related screenshots: " +
+        `Google's EmbeddingGemma model (under the Gemma Terms of Use) and ONNX Runtime, about ${DOWNLOAD_MB} MB, which ` +
+        "then run on this Mac. Only call this after the user agrees; tell them the size and the license " +
+        "first. Returns at once; the download continues in the background (watch get_status), and existing " +
+        "screenshots are indexed automatically when it finishes. Safe to call again after a failure. If the " +
+        "user says no, call it with `declined: true` instead so it isn't offered again.",
+      inputSchema: {
+        declined: z.boolean().optional().describe("The user said no: remember that and download nothing."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ declined }) => {
+      try {
+        return json(library.setupSemantic({ declined }));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "rebuild_index",
+    {
+      title: "Rebuild the search index",
+      description:
+        "Rebuilds the keyword search index from the stored screenshot details. With `semantic: true` it also " +
+        "discards every meaning vector and re-embeds all screenshots in the background (about a minute per " +
+        "thousand). Nothing the user or Claude wrote is lost. Use when search seems out of date or after a " +
+        "problem; it is never needed in normal use.",
+      inputSchema: {
+        semantic: z.boolean().optional().describe("Also rebuild the semantic (meaning) index."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ semantic }) => {
+      try {
+        return json(await library.rebuildIndex({ semantic }));
       } catch (err) {
         return failure(err);
       }
@@ -532,6 +630,11 @@ export function createServer(library: Library): McpServer {
 }
 
 export async function runServer(library: Library = Library.open()): Promise<void> {
+  // Keep meaning vectors current in the background, starting with anything
+  // changed while the server wasn't running.
+  library.semantic.autoRefresh = true;
+  library.semantic.schedule();
+  cleanUpAbandonedDownloads(library.config);
   const server = createServer(library);
   await server.connect(new StdioServerTransport());
   const shutdown = () => {

@@ -53,7 +53,7 @@ describe("search", needsHelper, () => {
 
   test("finds screenshots by concept even when the word isn't in the image", async () => {
     await analyzedLibrary(t);
-    const result = t.library.search({ query: "packaging inspiration" });
+    const result = await t.library.search({ query: "packaging inspiration" });
     assert.equal(result.results[0]?.file, "Screenshot 2025-08-03 at 4.15.22 PM.png");
     assert.match(result.results[0]?.match ?? "", /«packaging»/i);
     assert.equal(result.unanalyzed_in_library, 0);
@@ -61,25 +61,25 @@ describe("search", needsHelper, () => {
 
   test("expansion terms widen recall and stemming matches word forms", async () => {
     await analyzedLibrary(t);
-    const narrow = t.library.search({ query: "barista" });
+    const narrow = await t.library.search({ query: "barista" });
     assert.equal(narrow.total, 0);
-    const expanded = t.library.search({ query: "barista", also: ["coffee", "brewing"] });
+    const expanded = await t.library.search({ query: "barista", also: ["coffee", "brewing"] });
     assert.equal(expanded.results[0]?.file, "receipt.jpg");
-    assert.equal(t.library.search({ query: "brews" }).results[0]?.file, "receipt.jpg", "porter stemming");
+    assert.equal((await t.library.search({ query: "brews" })).results[0]?.file, "receipt.jpg", "porter stemming");
   });
 
   test("descriptive folder and file names are searchable; auto names are not", async () => {
     mkdirSync(join(t.folder, "Ideas"));
     copyFileSync(join(t.folder, "nothing-here.png"), join(t.folder, "Ideas", "SageGreenKitchenCabinets.png"));
     await t.library.scan({ folder: t.folder });
-    assert.equal(t.library.search({ query: "kitchen cabinets" }).results[0]?.file, "Ideas/SageGreenKitchenCabinets.png");
-    assert.equal(t.library.search({ query: "ideas" }).results[0]?.file, "Ideas/SageGreenKitchenCabinets.png");
-    assert.equal(t.library.search({ query: "img" }).total, 0, "IMG_2041 contributes no name terms");
+    assert.equal((await t.library.search({ query: "kitchen cabinets" })).results[0]?.file, "Ideas/SageGreenKitchenCabinets.png");
+    assert.equal((await t.library.search({ query: "ideas" })).results[0]?.file, "Ideas/SageGreenKitchenCabinets.png");
+    assert.equal((await t.library.search({ query: "img" })).total, 0, "IMG_2041 contributes no name terms");
   });
 
   test("OCR text is searchable before analysis", async () => {
     await t.library.scan({ folder: t.folder });
-    const result = t.library.search({ query: "PHAsset" });
+    const result = await t.library.search({ query: "PHAsset" });
     assert.equal(result.results[0]?.file, "code/IMG_2041.PNG");
     assert.equal(result.results[0]?.analyzed, false);
     assert.equal(result.unanalyzed_in_library, 5);
@@ -88,19 +88,19 @@ describe("search", needsHelper, () => {
   test("filters by content type and capture date", async () => {
     await analyzedLibrary(t);
     assert.deepEqual(
-      t.library.search({ contentType: "code" }).results.map((r) => r.file),
+      (await t.library.search({ contentType: "code" })).results.map((r) => r.file),
       ["code/IMG_2041.PNG"],
     );
-    const feb2025 = t.library.search({ after: "2025-02", before: "2025-03" });
+    const feb2025 = await t.library.search({ after: "2025-02", before: "2025-03" });
     assert.deepEqual(feb2025.results.map((r) => r.file), ["receipt.jpg"]);
-    const before2026 = t.library.search({ query: "order chips", before: "2026" });
+    const before2026 = await t.library.search({ query: "order chips", before: "2026" });
     assert.deepEqual(before2026.results.map((r) => r.file).sort(), ["Screenshot 2025-08-03 at 4.15.22 PM.png", "receipt.jpg"]);
   });
 
   test("ignored and missing screenshots stay out of results", async () => {
     const ids = await analyzedLibrary(t);
     t.library.db.prepare("UPDATE screenshots SET ignored = 1 WHERE id = ?").run(ids.get("receipt.jpg")!);
-    assert.equal(t.library.search({ query: "coffee" }).total, 0);
+    assert.equal((await t.library.search({ query: "coffee" })).total, 0);
   });
 
   test("stats summarize what the user has been saving", async () => {

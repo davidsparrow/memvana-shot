@@ -12,11 +12,15 @@ import {
   saveAnalyses,
 } from "./analysis.ts";
 import { type Config, dbPath, defaultConfig, expandHome, helperCandidates, resolveHelper } from "./config.ts";
-import { type Db, getMeta, openDb, schemaVersion } from "./db.ts";
+import { type Db, getMeta, openDb, schemaVersion, transaction } from "./db.ts";
 import { type ExtractSummary, absoluteThumbPath, extractPending, pendingCount } from "./extract.ts";
 import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
 import { helperVersion, readFinderTags } from "./helper.ts";
+import { type RelatedResult, relatedScreenshots } from "./related.ts";
 import { type SearchOptions, type SearchResult, type StatsOptions, libraryStats, searchScreenshots } from "./search.ts";
+import { rebuildSearchIndex } from "./search-index.ts";
+import type { Embedder } from "./semantic/embedder.ts";
+import { type SemanticStatus, SemanticIndex } from "./semantic/semantic-index.ts";
 import {
   type ScreenshotTag,
   type Suggestion,
@@ -144,21 +148,30 @@ const macOpen: Opener = async (path, reveal) => {
   await execFileAsync("open", reveal ? ["-R", path] : [path], { timeout: 10_000 });
 };
 
+export interface LibraryOptions {
+  /** Replaces the local embedding model (tests). */
+  embedder?: Embedder;
+}
+
 export class Library {
   readonly config: Config;
   readonly db: Db;
+  /** Meaning vectors for semantic search and related screenshots. */
+  readonly semantic: SemanticIndex;
   opener: Opener = macOpen;
 
-  constructor(config: Config, db: Db) {
+  constructor(config: Config, db: Db, options: LibraryOptions = {}) {
     this.config = config;
     this.db = db;
+    this.semantic = new SemanticIndex(db, config, options.embedder);
   }
 
-  static open(config: Config = defaultConfig()): Library {
-    return new Library(config, openDb(dbPath(config)));
+  static open(config: Config = defaultConfig(), options: LibraryOptions = {}): Library {
+    return new Library(config, openDb(dbPath(config)), options);
   }
 
   close(): void {
+    this.semantic.close();
     this.db.close();
   }
 
@@ -222,6 +235,8 @@ export class Library {
       screenshots: perSource.get(s.id) ?? 0,
     }));
 
+    this.semantic.schedule();
+    const semantic = this.semantic.status();
     return {
       library: {
         home: this.config.home,
@@ -231,8 +246,9 @@ export class Library {
       helper: helperInfo,
       sources,
       counts: Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v ?? 0])),
+      semantic_search: semantic,
       suggested_folders: sources.length === 0 ? await this.suggestedFolders() : undefined,
-      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState()),
+      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic),
     };
   }
 
@@ -288,6 +304,7 @@ export class Library {
     let finderTags: ScanSummary["finder_tags"];
     if (helper) finderTags = await this.syncFinderTags(targets.filter((t) => existsSync(t.location)));
 
+    this.semantic.schedule();
     const remaining = pendingCount(this.db);
     return {
       sources,
@@ -409,7 +426,8 @@ export class Library {
   }
 
   saveAnalyses(analyses: AnalysisInput[], model?: string): SaveResult & { remaining: number } {
-    return { ...saveAnalyses(this.db, analyses, model), remaining: pendingAnalysisCount(this.db) };
+    const saved = this.changed(saveAnalyses(this.db, analyses, model));
+    return { ...saved, remaining: pendingAnalysisCount(this.db) };
   }
 
   tagVocabulary() {
@@ -425,15 +443,15 @@ export class Library {
   }
 
   editTag(name: string, edit: TagEdit) {
-    return editTag(this.db, name, edit);
+    return this.changed(editTag(this.db, name, edit));
   }
 
   tagScreenshots(ids: string[], change: { add?: string[]; remove?: string[] }) {
-    return tagScreenshots(this.db, ids, change);
+    return this.changed(tagScreenshots(this.db, ids, change));
   }
 
   suggestTags(suggestions: Suggestion[]) {
-    return suggestTags(this.db, suggestions);
+    return this.changed(suggestTags(this.db, suggestions));
   }
 
   taggingBatch(limit = 40) {
@@ -441,8 +459,14 @@ export class Library {
   }
 
   edit(id: string, input: EditInput) {
-    editScreenshot(this.db, id, input);
+    this.changed(editScreenshot(this.db, id, input));
     return this.get(id, { ocrMaxChars: 0 });
+  }
+
+  /** Lets the semantic index catch up after a change to screenshots' details. */
+  private changed<T>(result: T): T {
+    this.semantic.schedule();
+    return result;
   }
 
   /** Imports Finder tags for every present file in the given folder sources. */
@@ -461,8 +485,33 @@ export class Library {
     return syncFinderTags(this.db, tags);
   }
 
-  search(options: SearchOptions): SearchResult {
-    return searchScreenshots(this.db, options);
+  search(options: SearchOptions): Promise<SearchResult> {
+    this.semantic.schedule(); // picks up changes made elsewhere (e.g. the CLI)
+    return searchScreenshots(this.db, options, this.semantic);
+  }
+
+  /** Screenshots related to one screenshot, by meaning, looks, tags, names, topics and time. */
+  related(id: string, options: { limit?: number } = {}): RelatedResult {
+    if (!this.db.prepare("SELECT 1 FROM screenshots WHERE id = ?").get(id)) {
+      throw new Error(`No screenshot with id ${id}`);
+    }
+    return relatedScreenshots(this.db, id, this.semantic.ready ? this.semantic.vectors() : undefined, options);
+  }
+
+  /** Starts the one-time semantic-search download (in the background) if needed, or records a no. */
+  setupSemantic(options: { declined?: boolean } = {}): SemanticStatus {
+    return this.semantic.setup(options);
+  }
+
+  /**
+   * Rebuilds the keyword index from stored data, and with `semantic` also
+   * discards every meaning vector so they are made again.
+   */
+  async rebuildIndex(options: { semantic?: boolean } = {}) {
+    const rows = transaction(this.db, () => rebuildSearchIndex(this.db));
+    if (options.semantic) await this.semantic.rebuild();
+    else this.semantic.schedule();
+    return { keyword_index: { screenshots: rows }, semantic_search: this.semantic.status() };
   }
 
   stats(options: StatsOptions = {}) {
@@ -502,6 +551,7 @@ function nextSteps(
   counts: Record<string, number | null>,
   helperReady: boolean,
   tagging: { tags: number; untagged: number },
+  semantic: SemanticStatus,
 ): string[] {
   const steps: string[] = [];
   if (!helperReady) steps.push("Build the native helper (see helper.fix) so screenshots can be extracted.");
@@ -517,6 +567,19 @@ function nextSteps(
     steps.push("No tags yet. Propose 6-12 starter tags from get_library_stats and create them once the user agrees.");
   } else if (tagging.tags > 0 && tagging.untagged > 0) {
     steps.push(`${tagging.untagged} analyzed screenshots haven't been considered for tags: get_tagging_batch, then suggest_tags.`);
+  }
+  if (counts.analyzed && semantic.state === "not_set_up" && !semantic.declined) {
+    steps.push(
+      `Semantic search (search by meaning, related screenshots) isn't set up. Offer it once: a one-time ` +
+        `${semantic.download?.total_mb} MB download of ${semantic.model} (${semantic.license}). ` +
+        "Call setup_semantic_search only after the user agrees.",
+    );
+  } else if (semantic.state === "downloading") {
+    steps.push(`Semantic search is downloading (${semantic.download?.received_mb} of ${semantic.download?.total_mb} MB).`);
+  } else if (semantic.state === "ready" && semantic.waiting > 0) {
+    steps.push(`${semantic.waiting} screenshots are waiting for semantic indexing; it runs in the background.`);
+  } else if (semantic.state === "error") {
+    steps.push(`Semantic search has a problem: ${semantic.error}`);
   }
   if (!steps.length) steps.push("Library is up to date. Search with search_screenshots.");
   return steps;
