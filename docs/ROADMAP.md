@@ -23,9 +23,10 @@ is deliberately not a general photo manager.
 - [x] Finder tags imported on every scan (writing back to Finder: later, opt-in)
 - [x] Your own edits and notes override the AI's details, are searchable, and survive re-analysis
 - [x] Descriptive file and folder names used as evidence in analysis and search
-- [ ] Semantic (vector) retrieval combined with keyword search, using a local embedding model
-- [ ] Related screenshots (semantic and visual similarity)
-- [ ] Library statistics and slash commands (`status`, `scan`, `categories`, `rebuild-index`)
+- [x] Semantic (vector) retrieval combined with keyword search, using a local embedding model
+  (EmbeddingGemma, on-device, downloaded on request)
+- [x] Related screenshots (semantic and visual similarity, shared tags and names, capture sessions, near-duplicates)
+- [x] Library statistics and slash commands (`status`, `scan`, `tags`, `rebuild-index`)
 
 ## V0.8: Native Photos connection
 
