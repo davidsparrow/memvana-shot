@@ -27,6 +27,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Shipped app matches source, signed and notarized
+        run: scripts/check-app.sh
+
       - name: Committed bundles match source
         run: |
           npm run build:mcp

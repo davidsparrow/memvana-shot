@@ -1,0 +1,2 @@
+# The signed app is committed as built; never touch its bytes.
+bin/** binary
