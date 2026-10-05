@@ -19,21 +19,34 @@ struct ExtractError: Error, CustomStringConvertible {
 }
 
 func runExtract(jobs: [Job], options: ExtractOptions) {
+    process(jobs, concurrency: options.concurrency, fields: { ["id": $0.id, "path": $0.path] }) { job in
+        let data = try Data(contentsOf: URL(fileURLWithPath: job.path), options: .mappedIfSafe)
+        return try extract(data: data, id: job.id, options: options)
+    }
+}
+
+/// Runs `work` on each job with bounded concurrency and writes one JSON line per
+/// job as it finishes: the work's result plus `fields`, or the error.
+func process<J>(
+    _ jobs: [J],
+    concurrency: Int,
+    fields: @escaping (J) -> [String: Any],
+    work: @escaping (J) throws -> [String: Any]
+) {
     let queue = OperationQueue()
-    queue.maxConcurrentOperationCount = options.concurrency
+    queue.maxConcurrentOperationCount = concurrency
     for job in jobs {
         queue.addOperation {
             autoreleasepool {
                 let started = Date()
                 var result: [String: Any]
                 do {
-                    result = try extract(job: job, options: options)
+                    result = try work(job)
                     result["ok"] = true
                 } catch {
                     result = ["ok": false, "error": String(describing: error)]
                 }
-                result["id"] = job.id
-                result["path"] = job.path
+                result.merge(fields(job)) { _, new in new }
                 result["elapsedMs"] = Int(Date().timeIntervalSince(started) * 1000)
                 JSONLines.shared.write(result)
             }
@@ -42,9 +55,8 @@ func runExtract(jobs: [Job], options: ExtractOptions) {
     queue.waitUntilAllOperationsAreFinished()
 }
 
-func extract(job: Job, options: ExtractOptions) throws -> [String: Any] {
-    let url = URL(fileURLWithPath: job.path)
-    let data = try Data(contentsOf: url, options: .mappedIfSafe)
+/// Turns image bytes (from a file or the Photos library) into facts.
+func extract(data: Data, id: String, options: ExtractOptions) throws -> [String: Any] {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil),
           CGImageSourceGetCount(source) > 0
     else { throw ExtractError(description: "not a readable image") }
@@ -70,7 +82,7 @@ func extract(job: Job, options: ExtractOptions) throws -> [String: Any] {
     }
 
     if let thumbDir = options.thumbDir {
-        result["thumb"] = try writeThumbnail(source: source, id: job.id, dir: thumbDir, maxDim: options.maxDim)
+        result["thumb"] = try writeThumbnail(source: source, id: id, dir: thumbDir, maxDim: options.maxDim)
     }
 
     var requests: [VNRequest] = []
