@@ -5,6 +5,13 @@
 
 import { basename, dirname, extname } from "node:path";
 
+/**
+ * SQL for a screenshot's name within its source (table alias `s`): the path
+ * inside a folder, or the file name Photos reports. A Photos asset id means
+ * nothing to people, so it never stands in for a name.
+ */
+export const NAME_SQL = "COALESCE(s.file_name, s.source_key)";
+
 const AUTO_NAME_PATTERNS: RegExp[] = [
   /^(screenshot|screen shot|cleanshot|simulator screen shot|simulator screenshot)\b/i,
   /^screenshot_\d/i,

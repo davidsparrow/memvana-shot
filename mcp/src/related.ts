@@ -6,7 +6,7 @@
 
 import { dirname } from "node:path";
 import type { Db } from "./db.ts";
-import { nameTerms } from "./names.ts";
+import { NAME_SQL, nameTerms } from "./names.ts";
 import { cosine, toVector } from "./semantic/vectors.ts";
 
 // Calibrated on screenshot libraries. Meaning: unrelated pairs average about
@@ -46,7 +46,7 @@ export interface RelatedResult {
 interface Candidate {
   id: string;
   captured_at: string | null;
-  source_key: string;
+  name: string;
   content_hash: string | null;
   feature_print: Uint8Array | null;
   feature_print_revision: number | null;
@@ -67,7 +67,7 @@ export function relatedScreenshots(
   options: { limit?: number } = {},
 ): RelatedResult {
   const select = `
-    SELECT s.id, s.captured_at, s.source_key, s.content_hash, e.feature_print, e.feature_print_revision,
+    SELECT s.id, s.captured_at, ${NAME_SQL} AS name, s.content_hash, e.feature_print, e.feature_print_revision,
            COALESCE(u.short_description, a.short_description) AS short_description,
            COALESCE(u.likely_reason_saved, a.likely_reason_saved) AS likely_reason_saved,
            a.content_type, a.entities, a.topics
@@ -86,7 +86,7 @@ export function relatedScreenshots(
   const targetMeaning = meaningVectors?.get(id);
   const targetLooks = target.feature_print ? toVector(target.feature_print) : undefined;
   const targetTime = target.captured_at ? Date.parse(target.captured_at) : NaN;
-  const targetFolder = descriptiveFolder(target.source_key);
+  const targetFolder = descriptiveFolder(target.name);
   const targetTags = tags.get(id) ?? [];
   const targetNames = new Map(entityNames(target.entities).map((n) => [n.toLowerCase(), n]));
   const targetTopics = new Set(parseList(target.topics));
@@ -153,7 +153,7 @@ export function relatedScreenshots(
       reasons.push([0.3, minutes < 1 ? "captured less than a minute apart" : `captured ${minutes} min apart`]);
     }
 
-    if (targetFolder && descriptiveFolder(c.source_key) === targetFolder) {
+    if (targetFolder && descriptiveFolder(c.name) === targetFolder) {
       score += 0.2;
       reasons.push([0.2, `same folder (${targetFolder})`]);
     }
@@ -162,7 +162,7 @@ export function relatedScreenshots(
     hits.push({
       id: c.id,
       captured_at: c.captured_at,
-      file: c.source_key,
+      file: c.name,
       short_description: c.short_description,
       likely_reason_saved: c.likely_reason_saved,
       content_type: c.content_type,
@@ -178,7 +178,7 @@ export function relatedScreenshots(
   hits.sort((a, b) => b.score - a.score);
   const limit = Math.min(Math.max(options.limit ?? 8, 1), 30);
   return {
-    screenshot: { id, short_description: target.short_description, file: target.source_key },
+    screenshot: { id, short_description: target.short_description, file: target.name },
     results: hits.slice(0, limit),
     signals: { meaning: targetMeaning !== undefined, visual: targetLooks !== undefined },
     note: targetMeaning

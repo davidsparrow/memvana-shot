@@ -11,10 +11,12 @@ You can then ask in plain language:
 - "What have I been researching about pickleball equipment?"
 - "What subjects do I keep coming back to?"
 
-> **Status: early build (V0.5).** Folder ingestion, on-device extraction,
-> Claude-written understanding, keyword and semantic search, related
-> screenshots, tags (including Finder tags) and your own edits work today.
-> The native Photos connection comes next. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: early build (V0.8).** Screenshots from your Photos library
+> (including iPhone screenshots synced through iCloud Photos) and from folders,
+> on-device extraction, Claude-written understanding, keyword and semantic
+> search, related screenshots, tags (including Finder tags) and your own edits
+> work today. The guided public release comes next. See
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
@@ -23,14 +25,15 @@ Claude ── Memvana Shot plugin ──┬── Skill             (how Claude 
                                 ├── screenshot-analyst (subagent that analyzes screenshots in batches)
                                 ├── MCP server        (tools: scan, analyze, search, related, tags, stats…)
                                 ├── slash commands    (/memvana-shot:status, :scan, :tags, :rebuild-index)
-                                ├── shot-helper       (Swift: Apple Vision OCR, thumbnails, visual fingerprints)
+                                ├── Memvana Shot.app  (Swift, signed: Photos access, Apple Vision OCR, thumbnails)
                                 └── embedder          (optional: EmbeddingGemma, on-device, for search by meaning)
                                           │
                               Local SQLite library on your Mac
 ```
 
-1. **Scan.** Memvana Shot finds new or changed screenshots in your folder and
-   extracts their text, labels and a thumbnail on-device.
+1. **Scan.** Memvana Shot finds new or changed screenshots in the Screenshots
+   album in Photos and in any folders you add, and extracts their text, labels
+   and a thumbnail on-device.
 2. **Understand.** Claude looks at each screenshot and records what it shows,
    *why you probably saved it*, its topics, and search keywords for things
    the text doesn't say (colors, styles, synonyms).
@@ -52,6 +55,11 @@ Claude ── Memvana Shot plugin ──┬── Skill             (how Claude 
 
 - **Local-first.** No account and no Memvana Shot server. Your index lives in
   `~/Library/Application Support/Memvana Shot/`.
+- **Photos access is read-only and screenshots-only.** A small helper app,
+  "Memvana Shot" (signed and notarized by Apple), asks macOS for Photos
+  permission once. It reads only the Screenshots album, skips hidden
+  screenshots, and never changes or deletes anything. You can turn it off any
+  time in System Settings > Privacy & Security > Photos.
 - **OCR runs on-device** through Apple's Vision framework.
 - **Claude writes the understanding** (descriptions, likely reason saved,
   topics) during your normal Claude session, so you don't need an API key.
@@ -67,20 +75,22 @@ Claude ── Memvana Shot plugin ──┬── Skill             (how Claude 
 
 - macOS 14 or later (Apple Silicon or Intel)
 - Node.js 22.13 or later
-- Xcode Command Line Tools (`xcode-select --install`), used to build the Swift helper
 - Semantic search only: an Apple Silicon Mac (ONNX Runtime ships no Intel
   macOS build). On Intel Macs, keyword search and related screenshots work
   without it.
+
+Nothing needs building: the plugin ships the helper app ready to run.
 
 ## Try it
 
 In Claude Code with the plugin loaded:
 
-> My screenshots are in ~/Desktop/Screenshots. Set up Memvana Shot and tell me
-> what I've been saving.
+> Set up Memvana Shot on my screenshots and tell me what I've been saving.
 
-Claude scans the folder, offers to analyze the newest 250, and then gives you
-an overview of your recurring subjects. After that, ask anything:
+Claude offers your Photos library (macOS asks you once to allow access) and
+your screenshot folder, scans what you pick, offers to analyze the newest 250,
+and then gives you an overview of your recurring subjects. After that, ask
+anything:
 
 > Find the screenshot of that tortilla chip bag with the yellow label.
 > What have I been screenshotting since June?
@@ -88,7 +98,7 @@ an overview of your recurring subjects. After that, ask anything:
 > Tag those three as Kitchen remodel, and add a note to the first one: "ask about lead time".
 
 Maintenance commands are there if you want them: `/memvana-shot:status`,
-`/memvana-shot:scan [folder]`, `/memvana-shot:tags` and
+`/memvana-shot:scan [folder | photos]`, `/memvana-shot:tags` and
 `/memvana-shot:rebuild-index`.
 
 ## Development
@@ -96,10 +106,12 @@ Maintenance commands are there if you want them: `/memvana-shot:status`,
 ```sh
 npm install
 npm run build          # builds the Swift helper and bundles the MCP server
+npm run build:app      # builds "Memvana Shot.app" for this Mac (needed for Photos)
 npm test
 
 # try the pipeline without Claude:
 node mcp/dist/cli.mjs scan ~/Desktop
+node mcp/dist/cli.mjs photos connect      # asks for Photos access, then scans Photos
 node mcp/dist/cli.mjs status
 node mcp/dist/cli.mjs search "order receipt"
 node mcp/dist/cli.mjs tags
@@ -109,6 +121,13 @@ node mcp/dist/cli.mjs related <id>
 # run the real-model tests once the model is installed:
 MEMVANA_SHOT_MODELS="$HOME/Library/Application Support/Memvana Shot/models" npm test
 ```
+
+Local builds run ahead of the shipped app in `bin/`. A build signed with a
+Developer ID uses the real bundle ID, so it shares the Photos permission; an
+ad hoc build uses a separate `.dev` ID. To ship a new helper,
+`npm run release:app` builds it for Apple Silicon and Intel, signs it with your
+Developer ID, notarizes and staples it, and replaces `bin/Memvana Shot.app`
+(it needs a `notarytool` keychain profile named `memvana-shot-notary`).
 
 To load the plugin into Claude Code from a local checkout:
 

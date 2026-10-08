@@ -1,10 +1,11 @@
 import type { Db } from "./db.ts";
+import { NAME_SQL } from "./names.ts";
 
 // The full-text index is derived data: one row per extracted screenshot, keyed
 // by screenshots.search_rowid, holding the *effective* details (the user's
 // edits win over Claude's analysis). Bump SEARCH_INDEX_VERSION whenever the
 // columns, weights or row SQL change; ensureSearchIndex() then rebuilds it.
-export const SEARCH_INDEX_VERSION = 3;
+export const SEARCH_INDEX_VERSION = 4;
 
 // Columns from most to least telling. SEARCH_WEIGHTS gives each column's bm25
 // weight in the same order.
@@ -54,7 +55,7 @@ function indexRowsSql(where: string): string {
       COALESCE(u.detailed_description, a.detailed_description, '') || ' ' || COALESCE(a.content_type, ''),
       COALESCE(e.ocr_text, ''),
       COALESCE((SELECT group_concat(json_extract(value, '$.label'), ' ') FROM json_each(e.labels)), ''),
-      name_terms(s.source_key)
+      name_terms(${NAME_SQL})
     FROM screenshots s
     JOIN extractions e ON e.screenshot_id = s.id
     LEFT JOIN analyses a ON a.screenshot_id = s.id

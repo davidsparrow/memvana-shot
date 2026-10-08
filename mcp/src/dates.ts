@@ -1,6 +1,7 @@
 // Works out when a screenshot was captured, from the best evidence available.
 
-export type CaptureSource = "exif" | "xmp" | "tiff" | "png" | "filename" | "file";
+// "photos" is the creation date the Photos library records for an asset.
+export type CaptureSource = "exif" | "xmp" | "tiff" | "png" | "filename" | "file" | "photos";
 
 export interface CaptureDate {
   iso: string;

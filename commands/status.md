@@ -1,12 +1,13 @@
 ---
-description: Memvana Shot library status — folders, what's analyzed, tags, semantic search, next steps
+description: Memvana Shot library status — sources, what's analyzed, tags, semantic search, next steps
 allowed-tools: mcp__plugin_memvana-shot_memvana-shot__get_status, mcp__plugin_memvana-shot_memvana-shot__get_library_stats
 ---
 
 Call `get_status`, then `get_library_stats`, and give the user a short status
 report about their Memvana Shot library:
 
-- Folders being watched, and when each was last scanned.
+- Sources: the folders being watched and, if connected, Photos (with whether
+  access is still on), and when each was last scanned.
 - Screenshot counts: total, analyzed, waiting for analysis, missing or with errors.
 - Tags: how many, and the largest few with counts.
 - Semantic search: ready (how many indexed, how many waiting), not set up, or downloading.

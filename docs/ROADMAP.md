@@ -30,9 +30,10 @@ is deliberately not a general photo manager.
 
 ## V0.8: Native Photos connection
 
-- [ ] Small macOS PhotoKit bridge app that asks for Photos permission once
-- [ ] Reads the Screenshots smart album, including iPhone screenshots synced through iCloud Photos
-- [ ] Detects new, changed, and deleted screenshots, with no manual exporting
+- [x] Small macOS PhotoKit bridge app that asks for Photos permission once
+- [x] Reads the Screenshots smart album, including iPhone screenshots synced through iCloud Photos
+- [x] Detects new, edited, and deleted screenshots, with no manual exporting
+- [x] Signed and notarized universal app that also does the on-device extraction, so nothing needs building
 
 ## V1.0: Public release
 

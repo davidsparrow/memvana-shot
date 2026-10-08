@@ -1,6 +1,6 @@
 {
   "name": "memvana-shot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Local-first screenshot intelligence for Claude.",
   "license": "MIT",
@@ -12,6 +12,8 @@
     "build": "npm run build:native && npm run build:mcp",
     "build:native": "swift build -c release --package-path native",
     "build:mcp": "node scripts/bundle.mjs",
+    "build:app": "scripts/build-app.sh",
+    "release:app": "scripts/build-app.sh --release",
     "typecheck": "tsc -p mcp",
     "test": "node --disable-warning=ExperimentalWarning --test \"mcp/test/**/*.test.ts\"",
     "fixtures": "swift scripts/make-fixtures.swift mcp/test/fixtures/library"

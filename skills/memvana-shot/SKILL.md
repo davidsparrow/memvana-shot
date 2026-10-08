@@ -18,7 +18,8 @@ produced on-device. You add the understanding.
 | Tool | Use it to |
 |---|---|
 | `get_status` | Check setup, see counts and get suggested next steps. Start here when unsure. |
-| `scan_screenshots` | Register a folder (`folder`) or rescan known folders. Runs on-device extraction in batches (`extract_limit`, default 250). |
+| `connect_photos` | Connect the Photos library's Screenshots album (iPhone screenshots too, via iCloud Photos). macOS asks permission the first time, so only after the user agrees. |
+| `scan_screenshots` | Register a folder (`folder`) or rescan every source (folders and Photos). Runs on-device extraction in batches (`extract_limit`, default 250). |
 | `get_analysis_batch` / `save_analyses` | Look at screenshots and record what they are and why they were saved. |
 | `search_screenshots` | Find screenshots: `query` holds the user's words, `also` holds your expansion terms. Matches by keywords, and by meaning once semantic search is set up. Supports date, tag and content-type filters. |
 | `get_related_screenshots` | "More like this": screenshots related to one, with the reasons (similar subject, looks alike, near-duplicate, shared tags or names, same session). |
@@ -28,7 +29,7 @@ produced on-device. You add the understanding.
 | `get_tagging_batch` / `suggest_tags` | Your own tag suggestions for analyzed screenshots. Text only, so it's cheap. |
 | `edit_screenshot` | The user's own edits: title, description, reason saved, notes, keywords, or hiding a screenshot. |
 | `get_screenshot` | Get the full record and the thumbnail for one screenshot. |
-| `open_screenshot` | Open the original in Preview, or reveal it in Finder. |
+| `open_screenshot` | Open the original in Preview, or reveal it in Finder. Screenshots from Photos open as a copy. |
 | `list_screenshots` | Browse by date or pipeline status. |
 | `setup_semantic_search` | One-time download of the local embedding model, after the user agrees. |
 | `rebuild_index` | Maintenance: rebuild the keyword index (and meaning vectors). Rarely needed. |
@@ -39,14 +40,27 @@ for everything, so never ask them to use a command.
 
 ## First run
 
-1. Call `get_status`. If `helper.available` is false, tell the user to run the
-   build command in `helper.fix`, then stop.
-2. If there are no sources, offer the `suggested_folders`. macOS saves
-   screenshots to the Desktop by default. iPhone screenshots can be exported or
-   AirDropped into a folder for now; a direct Photos connection is coming.
-   **Ask which folder to use. Never scan a folder the user hasn't confirmed.**
-3. Call `scan_screenshots({ folder })` and report the result in one line ("Found
-   1,204 screenshots; prepared the newest 250").
+1. Call `get_status`. If `helper.available` is false, pass on `helper.fix`,
+   then stop.
+2. If there are no sources, offer where to look, in one short message:
+   - **Photos** (when `photos.available`): the Screenshots album in Photos,
+     which includes iPhone and iPad screenshots synced through iCloud Photos.
+     Say that macOS will ask once to let "Memvana Shot" access Photos, that
+     access is read-only, and that only screenshots are indexed (not their
+     other photos).
+   - **A folder** from `suggested_folders`. Mac screenshots go to the Desktop
+     by default and usually aren't in Photos, so many people want both.
+
+   Keep this message to the choice of sources. Ask how many to analyze once
+   you know how many there are (step 4), and save tags and semantic search
+   for later. **Ask first. Never connect Photos or scan a folder the user
+   hasn't agreed to.**
+3. For Photos, tell the user to watch for the macOS prompt and click Allow,
+   then call `connect_photos`. For a folder, call `scan_screenshots({ folder })`.
+   Report the result in one line ("Found 1,204 screenshots in Photos; prepared
+   the newest 250"). If `connect_photos` returns `connected: false`, explain
+   `fix` in plain words, and offer to open System Settings for them
+   (`connect_photos({ open_settings: true })`).
 4. Ask how many to analyze. Recommend starting with the newest 250, with 1,000
    and everything as the other options. Analysis uses their Claude usage, so a
    small first batch pays off quickly.
@@ -82,7 +96,10 @@ with the first batch, and pass `include_guide: false` after that. Report
 progress every few batches, not per screenshot.
 
 If `scan_screenshots` reported `remaining_pending`, scan again first so the
-newest screenshots get extracted. When the user corrects a description ("no,
+newest screenshots get extracted.
+
+Screenshots from Photos arrive with the name Photos gives them (usually
+`IMG_1234.PNG`, which says nothing) and the date Photos recorded. When the user corrects a description ("no,
 that's my kitchen remodel"), take a second look with
 `get_analysis_batch({ ids: [id] })` and save the corrected analysis.
 
@@ -199,10 +216,24 @@ compare two ranges for "what's changed". Then run one or two searches to ground
 each theme in concrete examples. Talk about patterns and counts ("17 screenshots
 of dehydrated foods since June"), not lists of files.
 
+## Photos
+
+- Rescans (`scan_screenshots` with no folder) include Photos: new screenshots
+  are added, ones edited in Photos are re-read, and ones deleted or hidden in
+  Photos are marked missing, never removed from the index.
+- If `get_status` shows `photos.fix` (access was turned off in System
+  Settings), tell the user once, in plain words, and keep working with what's
+  indexed.
+- Screenshots from Photos open as an exported copy in Preview. They can't be
+  revealed in Finder.
+- Memvana Shot never changes, deletes or adds anything in Photos.
+
 ## Privacy
 
 - Explain the model when asked. The index stays on the Mac and OCR runs
-  on-device. Semantic search runs on-device too: the model is downloaded once
+  on-device. Photos access goes to a small helper app, "Memvana Shot", signed
+  by its developer and notarized by Apple. It reads only the Screenshots album
+  and changes nothing. Semantic search runs on-device too: the model is downloaded once
   (from Hugging Face and npm), then runs locally, and no screenshot data is
   sent anywhere for it. Images
   are sent to Claude only when it analyzes them or looks at them for a
@@ -212,7 +243,7 @@ of dehydrated foods since June"), not lists of files.
 - Results with `sensitive: true` get a generic description ("a bank statement
   from March"). Ask before showing details, and leave them out of broad
   summaries.
-- Memvana Shot never deletes, moves or edits the user's files.
+- Memvana Shot never deletes, moves or edits the user's files or photos.
 
 ## Scope
 

@@ -25,7 +25,8 @@ export function tempLibrary(options: LibraryOptions & { modelsDir?: string } = {
   const folder = join(root, "screenshots");
   cpSync(FIXTURES, folder, { recursive: true });
   const config: Config = { home: join(root, "home"), pluginRoot: REPO_ROOT, modelsDir: options.modelsDir };
-  const library = Library.open(config, options);
+  // Tests never launch the real Memvana Shot.app; Photos tests pass a fake bridge.
+  const library = Library.open(config, { photos: null, ...options });
   return {
     library,
     config,

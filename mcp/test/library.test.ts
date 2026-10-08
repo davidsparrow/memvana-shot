@@ -115,8 +115,8 @@ describe("Library without a helper", () => {
     assert.equal(status.counts.pending, 5);
   });
 
-  test("scan without folders asks for one", async () => {
-    await assert.rejects(t.library.scan(), /No screenshot folders registered/);
+  test("scan without sources asks for a folder or Photos", async () => {
+    await assert.rejects(t.library.scan(), /No screenshot sources yet. Connect Photos with connect_photos, or call again with `folder`/);
     await assert.rejects(t.library.scan({ folder: join(t.folder, "nope") }), /Not a folder/);
   });
 });

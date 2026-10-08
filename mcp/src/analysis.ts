@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { type Db, now, transaction } from "./db.ts";
-import { type NameHint, nameHint } from "./names.ts";
+import { NAME_SQL, type NameHint, nameHint } from "./names.ts";
 import { reindexScreenshot } from "./search-index.ts";
 import { suggestTags, vocabulary } from "./tags.ts";
 
@@ -176,7 +176,7 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
     const until = new Date(Date.now() + LEASE_MINUTES * 60_000).toISOString();
     const lease = db.prepare("UPDATE screenshots SET analysis_claimed_until = ? WHERE id = ?");
     const fetch = db.prepare(`
-      SELECT s.id, s.captured_at, s.source_key, s.width, s.height, s.source_device,
+      SELECT s.id, s.captured_at, ${NAME_SQL} AS name, s.width, s.height, s.source_device,
              e.ocr_text, e.labels, e.thumb_path
       FROM screenshots s JOIN extractions e ON e.screenshot_id = s.id
       WHERE s.id = ?
@@ -190,7 +190,7 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
       items.push({
         id: row.id,
         captured_at: row.captured_at,
-        ...nameHint(row.source_key),
+        ...nameHint(row.name),
         width: row.width,
         height: row.height,
         source_device: row.source_device,

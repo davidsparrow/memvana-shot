@@ -1,6 +1,6 @@
 {
   "name": "memvana-shot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Understand, organize, and search the screenshots you've been hoarding. Local-first: OCR and indexing run on your Mac, and Claude does the understanding.",
   "author": {
     "name": "davidsparrow",
