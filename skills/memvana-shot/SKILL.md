@@ -61,9 +61,12 @@ for everything, so never ask them to use a command.
    the newest 250"). If `connect_photos` returns `connected: false`, explain
    `fix` in plain words, and offer to open System Settings for them
    (`connect_photos({ open_settings: true })`).
-4. Ask how many to analyze. Recommend starting with the newest 250, with 1,000
-   and everything as the other options. Analysis uses their Claude usage, so a
-   small first batch pays off quickly.
+4. Ask how many to analyze, and wait for the answer, even when there are only
+   a few ("Found 5 screenshots. Analyze all 5?"). Analysis sends the images to
+   Claude, so it needs the user's yes. When there are more than 250, recommend
+   starting with the newest 250, with 1,000 and everything as the other
+   options. Analysis uses their Claude usage, so a small first batch pays off
+   quickly.
 5. Analyze them (next section).
 6. Call `get_library_stats` and give the payoff, written as a short overview,
    not a data dump:
@@ -73,6 +76,10 @@ for everything, so never ask them to use a command.
 
    Group related topics into 5–8 human-sized themes with counts. Add one or two
    specific, slightly surprising observations, then offer a few searches to try.
+   Give a date for a particular screenshot only when a tool result showed you
+   its `captured_at` (search and list results do). `get_library_stats` counts
+   screenshots per month without saying which ones, so never match its months
+   to screenshots.
 7. **Offer starter tags.** Propose 6–12 tags drawn from those themes and from
    any descriptive folder names, each with a one-line description. On the
    user's OK (and after their edits), `create_tags` with `proposed_by_ai: true`,
