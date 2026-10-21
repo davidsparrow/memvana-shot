@@ -16,6 +16,9 @@
     "release:app": "scripts/build-app.sh --release",
     "typecheck": "tsc -p mcp",
     "test": "node --disable-warning=ExperimentalWarning --test \"mcp/test/**/*.test.ts\"",
+    "qa": "node scripts/qa.mjs auto",
+    "qa:guided": "node scripts/qa.mjs guided",
+    "qa:clean": "node scripts/qa.mjs clean",
     "fixtures": "swift scripts/make-fixtures.swift mcp/test/fixtures/library"
   },
   "dependencies": {
