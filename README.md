@@ -108,6 +108,8 @@ npm install
 npm run build          # builds the Swift helper and bundles the MCP server
 npm run build:app      # builds "Memvana Shot.app" for this Mac (needed for Photos)
 npm test
+npm run qa             # end-to-end checks in real Claude Code sessions (docs/QA.md)
+npm run qa:guided      # the hands-on checklist: Photos, System Settings, Preview, Finder
 
 # try the pipeline without Claude:
 node mcp/dist/cli.mjs scan ~/Desktop
