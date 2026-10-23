@@ -23,9 +23,9 @@ produced on-device. You add the understanding.
 | `get_analysis_batch` / `save_analyses` | Look at screenshots and record what they are and why they were saved. |
 | `search_screenshots` | Find screenshots: `query` holds the user's words, `also` holds your expansion terms. Matches by keywords, and by meaning once semantic search is set up. Supports date, tag and content-type filters. |
 | `get_related_screenshots` | "More like this": screenshots related to one, with the reasons (similar subject, looks alike, near-duplicate, shared tags or names, same session). |
-| `get_library_stats` | See what the user has been saving: topics, tags, content types, apps, captures per month. |
+| `get_library_stats` | See what the user has been saving: topics, tags, content types, apps, captures per month, and the albums and folders they sorted screenshots into (`groups`). |
 | `list_tags` / `create_tags` / `edit_tag` | The user's tags: list them, create them (with the user's OK), rename, merge, delete, or settle suggestions in bulk. |
-| `tag_screenshots` | Apply the user's tagging decisions: add tags, or remove them (which records a rejection). |
+| `tag_screenshots` | Apply the user's tagging decisions: add tags, or remove them (which records a rejection), on given screenshots or a whole album or folder. |
 | `get_tagging_batch` / `suggest_tags` | Your own tag suggestions for analyzed screenshots. Text only, so it's cheap. |
 | `edit_screenshot` | The user's own edits: title, description, reason saved, notes, keywords, or hiding a screenshot. |
 | `get_screenshot` | Get the full record and the thumbnail for one screenshot. |
@@ -80,11 +80,17 @@ for everything, so never ask them to use a command.
    its `captured_at` (search and list results do). `get_library_stats` counts
    screenshots per month without saying which ones, so never match its months
    to screenshots.
-7. **Offer starter tags.** Propose 6–12 tags drawn from those themes and from
-   any descriptive folder names, each with a one-line description. On the
-   user's OK (and after their edits), `create_tags` with `proposed_by_ai: true`,
-   then tag the analyzed screenshots (see Tags). Skip this if Finder tags were
-   imported and already cover their needs.
+7. **Offer starter tags.** If `get_library_stats` lists `groups`, the user
+   already sorts some screenshots into Photos albums or folders, so offer
+   those first ("You keep some in albums: Kitchen remodel (34), Recipes (12).
+   Want those as tags?"). Then propose more, for 6–12 in all, drawn from the
+   themes, each with a one-line description. On the user's OK (and after their
+   edits), `create_tags` with `proposed_by_ai: true`. For each album or folder
+   they turned into a tag, apply it with
+   `tag_screenshots({ album: name, add: [tag] })` (or `folder`). Then suggest
+   tags for the rest (see Tags). Skip groups that already have a matching
+   `tag`, and skip this step if Finder tags already cover their needs. Never
+   turn an album or folder into a tag without a yes.
 8. **Offer semantic search once** if `get_status` shows
    `semantic_search.state: "not_set_up"` (see Semantic search).
 
@@ -103,7 +109,9 @@ with the first batch, and pass `include_guide: false` after that. Report
 progress every few batches, not per screenshot.
 
 If `scan_screenshots` reported `remaining_pending`, scan again first so the
-newest screenshots get extracted.
+newest screenshots get extracted. Screenshots counted in
+`extracting_elsewhere` are already being extracted in the background, so
+don't rescan for them.
 
 Screenshots from Photos arrive with the name Photos gives them (usually
 `IMG_1234.PNG`, which says nothing) and the date Photos recorded. When the user corrects a description ("no,
@@ -137,6 +145,22 @@ vocabulary as theirs:
   (`edit_tag({ confirm_suggestions: true })`) or go through them.
 - **Finder tags** on files in the user's folders are imported on every scan and
   show up as `added` by Finder. Tags removed in Finder are removed here too.
+- **Albums and folders.** Tagging batches show each screenshot's `folder` and
+  `albums`. When one matches a tag the user made from it, suggest that tag.
+  New screenshots in the album are tagged only through suggestions.
+
+## New screenshots between sessions
+
+Each time a Claude session starts, Memvana Shot quietly looks for new
+screenshots and prepares them on the Mac (text, thumbnail). It never analyzes
+them and never asks for Photos access. When there are some, the session starts
+with a note like "Memvana Shot: 12 new screenshots are ready to analyze", and
+`get_status` shows `new_screenshots_waiting`.
+
+When the user brings up their screenshots, mention the new ones once ("12 new
+screenshots since last time. Want me to analyze them?") and analyze only after
+a yes. Don't bring them up in conversations about something else. The backlog
+the user chose not to process at setup is left alone until they ask.
 
 ## Editing details
 
@@ -211,7 +235,8 @@ screenshots still work.
 For "more like this", "what else did I save about this?", or a follow-up on a
 screenshot you just found, call `get_related_screenshots` with its id. Each
 result lists its `reasons`, strongest first. Use them in your answer ("three
-more from the same pricing research, captured minutes apart"). `near_duplicate`
+more from the same pricing research, captured minutes apart", "two more
+from your Kitchen remodel album"). `near_duplicate`
 marks copies and re-captures. Mention duplicates when they're relevant, but
 never offer to delete anything. Without semantic search, relatedness uses
 looks, tags, names, topics and dates only, and `note` says so.
@@ -233,6 +258,9 @@ of dehydrated foods since June"), not lists of files.
   indexed.
 - Screenshots from Photos open as an exported copy in Preview. They can't be
   revealed in Finder.
+- The user's own Photos albums are read along with each screenshot (shared
+  and smart albums aren't), so album names are searchable and show in
+  `albums`. Moving screenshots between albums updates on the next scan.
 - Memvana Shot never changes, deletes or adds anything in Photos.
 
 ## Privacy

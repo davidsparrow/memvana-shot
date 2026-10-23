@@ -19,7 +19,9 @@ Argument: "$ARGUMENTS"
   Photos (when `photos.available`) and its `suggested_folders`. Never connect
   Photos or scan a folder the user hasn't agreed to.
 - If `remaining_pending` is above 0, scan again until it's 0 or you've done
-  four scans, then say how many are left.
+  four scans, then say how many are left. Screenshots in
+  `extracting_elsewhere` are already being extracted in the background; say
+  so instead of rescanning for them.
 
 Report the result in one or two lines: how many screenshots were found, new,
 changed, missing, and any Finder tags imported. If a source is `unavailable`,
