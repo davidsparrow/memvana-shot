@@ -45,7 +45,7 @@ interface PendingRow {
 
 // Pending screenshots are claimed a chunk at a time, so several processes can
 // extract side by side without ever taking the same ones.
-const CHUNK = 50;
+const CHUNK = 100;
 
 const PENDING = "s.status = 'pending' AND s.ignored = 0 AND s.missing_since IS NULL";
 
