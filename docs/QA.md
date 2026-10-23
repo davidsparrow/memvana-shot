@@ -12,7 +12,7 @@ Finder. QA happens in those same places, in two parts:
 - **Part 2, guided** (`npm run qa:guided`). You work through a checklist in a
   real Claude Code window. This part covers what a script can't: the Photos
   permission, System Settings, Preview and Finder windows, and whether the
-  conversation feels right. It takes about 20 minutes.
+  conversation feels right. It takes about 30 minutes.
 
 The 109 unit tests (`npm test`) cover the tools' logic. This QA covers the
 rest: Claude following the Skill, the plugin loading, the signed app, and the
@@ -48,7 +48,7 @@ such as delegating analysis to the subagent. When a case doesn't fully pass,
 Claude's reply is printed under it. The run ends with a summary like this:
 
 ```
-48 passed, 0 warnings, 0 failed in 2.2 min, $0.45 of Claude usage.
+57 passed, 0 warnings, 0 failed in 2.6 min, $0.46 of Claude usage.
 Report with Claude's full replies: /tmp/memvana-qa/auto/report.md
 ```
 
@@ -65,14 +65,16 @@ another model.
 | A4 | Find the screenshot of that snack bag I saved. | Adds expansion terms (!); the chip bag ranks first (its text never says "snack"); the answer names it |
 | A5 | What did I screenshot in February 2025? | Filters by a February 2025 date range; finds the receipt |
 | A6 | Show me screenshots related to that receipt. | Calls `get_related_screenshots` on the receipt without an error |
-| A7 | Make a tag called Kitchen… and put the pour-over receipt in it. | The tag exists and the receipt carries it |
-| A8 | Actually, take the Kitchen tag off the receipt. | Recorded as a rejection; the tag itself survives |
-| A9 | Add a note to the receipt: ask about a refund. | The note is saved, and searching "refund" finds the receipt first |
-| A10 | Hide the blank screenshot… | Only that screenshot is hidden |
-| A11 | `/memvana-shot:scan` (after the script deletes one file and adds a Finder tag to another) | The deleted file is marked missing, not removed; the Finder tag is imported; nothing is analyzed |
-| A12 | `/memvana-shot:tags` | Lists both tags |
-| A13 | `/memvana-shot:rebuild-index` | Rebuilds, and search still works |
-| A14 | `/memvana-shot:status` | Reads status and stats, and mentions the missing screenshot (!) |
+| A7 | What tags would you suggest for organizing these? | The `code` folder is listed as a group and offered as a tag (!); no tag is created or applied |
+| A8 | Make a tag called Kitchen… and put the pour-over receipt in it. | The tag exists and the receipt carries it |
+| A9 | Actually, take the Kitchen tag off the receipt. | Recorded as a rejection; the tag itself survives |
+| A10 | Add a note to the receipt: ask about a refund. | The note is saved, and searching "refund" finds the receipt first |
+| A11 | Hide the blank screenshot… | Only that screenshot is hidden |
+| A12 | `/memvana-shot:scan` (after the script deletes one file and adds a Finder tag to another) | The deleted file is marked missing, not removed; the Finder tag is imported; nothing is analyzed |
+| A13 | `/memvana-shot:tags` | Lists both tags |
+| A14 | `/memvana-shot:rebuild-index` | Rebuilds, and search still works |
+| A15 | `/memvana-shot:status` | Reads status and stats, and mentions the missing screenshot (!) |
+| A16 | Anything new in my screenshots since last time? (after the script adds a screenshot and runs the session-start hook the way Claude Code does) | The hook returns at once; its detached catch-up prepares the new screenshot without analyzing it; Claude mentions the 1 new screenshot and doesn't analyze it |
 | Z | (nothing; this case runs after the last turn) | Photos was never connected; your real library wasn't touched |
 
 (!) marks a soft check: when it fails you get a warning, not a failure.
@@ -179,6 +181,38 @@ Type: `Show that one in Finder.`
 - [ ] It explains in plain words that screenshots from Photos have no file to
       show in Finder. It doesn't fail with an error.
 
+### G5b. Photos albums as tags
+
+This needs an album of your own. Memvana Shot only reads album names; it
+never changes them.
+
+1. **You:** in Photos, click **Screenshots** under **Media Types**, select the
+   two most recent screenshots (usually at the bottom), and choose **File >
+   New Album with Selection**. Type `QA Album` and press Return. (Use the two
+   most recent, because G4 prepared only the newest 10.)
+
+Type: `/memvana-shot:scan photos`
+
+Type: `What tags would you suggest?`
+
+- [ ] It offers QA Album as a tag, among others, and creates nothing yet.
+
+Type: `Yes, make QA Album a tag.`
+
+- [ ] It confirms that both screenshots in the album now carry the tag.
+- [ ] `/memvana-shot:tags` shows QA Album on 2 screenshots.
+
+2. **You:** in Photos, open **QA Album**, select one of its screenshots and
+   press Delete. Choose **Remove from Album** if asked (the screenshot stays
+   in your library).
+
+Type: `/memvana-shot:scan photos`, then `Which screenshots are in my QA Album album now?`
+
+- [ ] It finds 1, the one still in the album.
+
+3. **You:** delete the album when you're done: Control-click **QA Album** and
+   choose **Delete Album**. The screenshots stay in your library.
+
 ### G6. Finder tags
 
 1. **You:** in Finder, choose **Go > Go to Folder…** (Shift-Command-G), paste
@@ -247,6 +281,25 @@ Then look back over the whole session:
 - [ ] Replies were short and plain, with counts rather than lists of files.
 - [ ] It never repeated anything secret-looking (a code, a card or account
       number).
+
+### G9b. New screenshots between sessions
+
+1. Type `/exit`. At `Delete the QA library and test folder now? [Y/n]`, type
+   `n` and press Return.
+2. **You:** in the same terminal, add a "new" screenshot:
+
+   ```sh
+   cp /tmp/memvana-qa/guided/Screenshots/receipt.jpg "/tmp/memvana-qa/guided/Screenshots/receipt again.jpg"
+   ```
+
+3. **You:** reopen the same library: `npm run qa:guided -- --keep`. The banner
+   says `(reopened)`. As the session starts, Memvana Shot quietly prepares the
+   new screenshot.
+
+Type: `Anything new in my screenshots since last time?`
+
+- [ ] It says there's 1 new screenshot and offers to analyze it.
+- [ ] It doesn't analyze it until you say yes.
 
 ### Optional: search by meaning (about 5 minutes the first time)
 
