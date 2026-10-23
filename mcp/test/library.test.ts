@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { type TempLibrary, needsHelper, tempLibrary } from "./helpers.ts";
@@ -89,18 +89,52 @@ describe("Library.scan", needsHelper, () => {
     renameSync(parked, t.folder);
   });
 
-  test("extract_limit processes large backlogs in batches", async () => {
-    const first = await t.library.scan({ folder: t.folder, extractLimit: 2 });
+  test("the backlog left at setup is prepared only when the user wants more analyzed", async () => {
+    const first = await t.library.scan({ folder: t.folder, extractLimit: 2 }); // the user's first batch
     assert.ok("processed" in first.extraction);
     assert.equal(first.extraction.processed, 2);
-    assert.equal(first.remaining_pending, 3);
-    assert.match(first.next ?? "", /3 screenshots still need/);
+    assert.deepEqual([first.ready_for_analysis, first.remaining_pending, first.backlog], [2, 0, 3]);
+    assert.match(first.next ?? "", /3 older screenshots haven't been prepared/);
 
+    const rescan = await t.library.scan();
+    assert.ok("processed" in rescan.extraction);
+    assert.equal(rescan.extraction.processed, 0, "a rescan leaves the backlog alone");
     const discoverOnly = await t.library.scan({ extractLimit: 0 });
     assert.deepEqual(discoverOnly.extraction, { skipped: "extract_limit is 0" });
 
-    const rest = await t.library.scan();
-    assert.equal(rest.remaining_pending, 0);
+    copyFileSync(join(t.folder, "receipt.jpg"), join(t.folder, "receipt again.jpg"));
+    const withNew = await t.library.scan();
+    assert.ok("processed" in withNew.extraction);
+    assert.equal(withNew.extraction.processed, 1, "only the new screenshot");
+    assert.equal(withNew.backlog, 3);
+
+    // The user asks for more: fill up to 5 ready for analysis, newest first.
+    const more = await t.library.scan({ readyForAnalysis: 5 });
+    assert.ok("processed" in more.extraction);
+    assert.equal(more.extraction.processed, 2);
+    assert.deepEqual([more.ready_for_analysis, more.backlog], [5, 1]);
+    const enough = await t.library.scan({ readyForAnalysis: 4 });
+    assert.deepEqual(enough.extraction, { skipped: "4 or more are already ready for analysis" });
+
+    const status = await t.library.status();
+    assert.equal(status.backlog, 1);
+    assert.match(status.next_steps.join(" "), /1 older screenshots weren't prepared at setup/);
+    assert.doesNotMatch(status.next_steps.join(" "), /await local extraction/);
+  });
+
+  test("a new folder gets its own screenshots prepared, not another source's backlog", async () => {
+    await t.library.scan({ folder: t.folder, extractLimit: 1 });
+    const second = join(t.folder, "..", "more-screenshots");
+    mkdirSync(second);
+    copyFileSync(join(t.folder, "window-shadow.png"), join(second, "window-shadow copy.png"));
+    // Make the existing backlog newer, so newest-first across sources would pick it.
+    t.library.db.prepare("UPDATE screenshots SET captured_at = '2030-01-01T00:00:00.000Z' WHERE status = 'pending'").run();
+
+    const summary = await t.library.scan({ folder: second });
+    assert.ok("processed" in summary.extraction);
+    assert.equal(summary.extraction.processed, 1);
+    assert.equal(byFile(t, "window-shadow copy.png").status, "extracted");
+    assert.equal(summary.backlog, 4);
   });
 });
 

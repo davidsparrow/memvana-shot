@@ -25,12 +25,22 @@ export interface Extractors {
   photos?: PhotosBridge;
 }
 
-export interface ExtractRunOptions {
+/**
+ * Which pending screenshots a run may take. The backlog is what a source held
+ * at its first scan and wasn't prepared then; everything else pending is new
+ * since (or re-queued after a change).
+ */
+export interface ExtractScope {
+  /** Only these sources (default: every source). */
+  sources?: string[];
+  /** Sources whose backlog may be extracted too: "all", some source ids, or none (default). */
+  backlog?: "all" | string[];
+}
+
+export interface ExtractRunOptions extends ExtractScope {
   limit: number;
   maxDim?: number;
   concurrency?: number;
-  /** Only screenshots found after their source's first scan, or re-queued after a change (not the backlog). */
-  onlyNew?: boolean;
   /** Start no new chunk after this time (ms since the epoch). */
   deadline?: number;
   onProgress?: (done: number, total: number) => void;
@@ -49,9 +59,44 @@ const CHUNK = 100;
 
 const PENDING = "s.status = 'pending' AND s.ignored = 0 AND s.missing_since IS NULL";
 
-export function pendingCount(db: Db): number {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM screenshots s WHERE ${PENDING}`).get() as { n: number };
+// Pending screenshots that aren't backlog: found after their source's first
+// scan, or extracted before and re-queued because they changed. (Alias src
+// is the screenshot's source.)
+const NEW_OR_CHANGED = "(s.discovered_at > src.initial_scan_at OR s.content_hash IS NOT NULL)";
+
+/** SQL limiting pending screenshots to a scope, with its parameters. */
+function scopeSql(scope: ExtractScope): { sql: string; params: string[] } {
+  const params: string[] = [];
+  const parts: string[] = [];
+  const ids = (list: string[]) => {
+    params.push(...list);
+    return list.map(() => "?").join(", ");
+  };
+  if (scope.sources) parts.push(scope.sources.length ? `s.source_id IN (${ids(scope.sources)})` : "0");
+  if (scope.backlog !== "all") {
+    const backlog = scope.backlog?.length ? ` OR s.source_id IN (${ids(scope.backlog)})` : "";
+    parts.push(`(${NEW_OR_CHANGED}${backlog})`);
+  }
+  return { sql: parts.map((p) => ` AND ${p}`).join(""), params };
+}
+
+/** Pending screenshots in a scope (default: all of them). */
+export function pendingCount(db: Db, scope: ExtractScope = { backlog: "all" }): number {
+  const { sql, params } = scopeSql(scope);
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM screenshots s JOIN sources src ON src.id = s.source_id WHERE ${PENDING}${sql}`)
+    .get(...params) as { n: number };
   return row.n;
+}
+
+/** Pending screenshots that are new or changed since their source's first scan. */
+export function newPendingCount(db: Db): number {
+  return pendingCount(db, {});
+}
+
+/** The backlog: pending screenshots left from a source's first scan, prepared only when the user wants more analyzed. */
+export function backlogCount(db: Db): number {
+  return pendingCount(db) - newPendingCount(db);
 }
 
 /** Pending screenshots another process is extracting right now. */
@@ -62,22 +107,22 @@ export function claimedCount(db: Db): number {
   return row.n;
 }
 
-/** Claims up to `limit` unclaimed pending screenshots, newest first. */
-function claimPending(db: Db, limit: number, options: { photos: boolean; onlyNew?: boolean }): { rows: PendingRow[]; until: string } {
+/** Claims up to `limit` unclaimed pending screenshots in a scope, newest first. */
+function claimPending(db: Db, limit: number, options: ExtractScope & { photos: boolean }): { rows: PendingRow[]; until: string } {
   return transaction(db, () => {
     const stamp = now();
     const kinds = options.photos ? "s.file_path IS NOT NULL OR s.photo_asset_id IS NOT NULL" : "s.file_path IS NOT NULL";
-    const fresh = options.onlyNew ? "AND (s.discovered_at > src.initial_scan_at OR s.content_hash IS NOT NULL)" : "";
+    const scope = scopeSql(options);
     const rows = db
       .prepare(`
         SELECT s.id, s.file_path, s.photo_asset_id, s.content_hash
         FROM screenshots s JOIN sources src ON src.id = s.source_id
-        WHERE ${PENDING} AND (${kinds}) ${fresh}
+        WHERE ${PENDING} AND (${kinds})${scope.sql}
           AND (s.extract_claimed_until IS NULL OR s.extract_claimed_until < ?)
         ORDER BY s.captured_at DESC
         LIMIT ?
       `)
-      .all(stamp, limit) as unknown as PendingRow[];
+      .all(...scope.params, stamp, limit) as unknown as PendingRow[];
     // Long enough for the slowest case: Photos downloading every image from iCloud.
     const until = new Date(Date.now() + 2 * 60_000 + rows.length * 15_000).toISOString();
     const claim = db.prepare("UPDATE screenshots SET extract_claimed_until = ? WHERE id = ?");
@@ -102,11 +147,12 @@ export async function extractPending(
   let photos = extractors.photos;
   let engine: string | undefined;
   const extractOptions = { thumbDir: thumbsDir(config), maxDim: options.maxDim, concurrency: options.concurrency };
-  const total = Math.min(options.limit, pendingCount(db));
+  const scope: ExtractScope = { sources: options.sources, backlog: options.backlog };
+  const total = Math.min(options.limit, pendingCount(db, scope));
 
   for (let left = options.limit; left > 0; ) {
     if (options.deadline && Date.now() > options.deadline) break;
-    const { rows, until } = claimPending(db, Math.min(CHUNK, left), { photos: photos !== undefined, onlyNew: options.onlyNew });
+    const { rows, until } = claimPending(db, Math.min(CHUNK, left), { ...scope, photos: photos !== undefined });
     if (rows.length === 0) break;
     left -= rows.length;
     if (!engine) {

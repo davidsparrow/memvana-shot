@@ -41,7 +41,10 @@ describe("analysis pipeline", needsHelper, () => {
     assert.equal(second.items.length, 2);
     const overlap = first.items.filter((i) => second.items.some((j) => j.id === i.id));
     assert.deepEqual(overlap, []);
-    assert.equal(t.library.analysisBatch({ limit: 3 }).items.length, 0, "everything is leased");
+    assert.equal(first.leased, 0, "its own batch isn't counted as leased elsewhere");
+    assert.equal(second.leased, 3, "the first analyst holds 3");
+    const empty = t.library.analysisBatch({ limit: 3 });
+    assert.deepEqual([empty.items.length, empty.remaining, empty.leased], [0, 5, 5], "everything is leased");
 
     // An expired lease is handed out again.
     t.library.db.prepare("UPDATE screenshots SET analysis_claimed_until = '2000-01-01T00:00:00.000Z'").run();

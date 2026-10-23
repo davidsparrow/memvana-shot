@@ -8,6 +8,7 @@ import {
   type BatchItem,
   type SaveResult,
   claimBatch,
+  leasedCount,
   pendingAnalysisCount,
   saveAnalyses,
 } from "./analysis.ts";
@@ -22,7 +23,14 @@ import {
   resolveHelper,
 } from "./config.ts";
 import { type Db, getMeta, now, openDb, schemaVersion, setMeta, transaction } from "./db.ts";
-import { type ExtractSummary, absoluteThumbPath, claimedCount, extractPending, pendingCount } from "./extract.ts";
+import {
+  type ExtractSummary,
+  absoluteThumbPath,
+  backlogCount,
+  claimedCount,
+  extractPending,
+  newPendingCount,
+} from "./extract.ts";
 import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
 import { helperVersion, readFinderTags } from "./helper.ts";
 import { type GroupSelector, groupMembers } from "./groups.ts";
@@ -71,6 +79,11 @@ export interface ScanOptions {
   /** Scan only the Photos library (once connected). */
   photos?: boolean;
   extractLimit?: number;
+  /**
+   * The user chose to analyze more: prepare older screenshots too (newest
+   * first) until this many are ready for analysis. Overrides extractLimit.
+   */
+  readyForAnalysis?: number;
   onProgress?: (done: number, total: number) => void;
 }
 
@@ -79,7 +92,12 @@ export interface ScanSummary {
   extraction: ExtractSummary | { skipped: string };
   /** Tags picked up from (or removed in) Finder. */
   finder_tags?: { added: number; removed: number };
+  /** Extracted screenshots waiting for analysis. */
+  ready_for_analysis: number;
+  /** New or changed screenshots still waiting for on-device extraction. */
   remaining_pending: number;
+  /** Older screenshots not prepared at setup: extracted only when the user chooses to analyze more. */
+  backlog?: number;
   /** Pending screenshots another Memvana Shot process (such as the session-start catch-up) is extracting. */
   extracting_elsewhere?: number;
   next?: string;
@@ -303,6 +321,7 @@ export class Library {
     const photos = await this.photosStatus();
     const catchUp = this.lastCatchUp();
     const newWaiting = newWaitingCount(this.db);
+    const backlog = backlogCount(this.db);
     return {
       library: {
         home: this.config.home,
@@ -322,14 +341,24 @@ export class Library {
         extracted: catchUp.extracted,
       },
       new_screenshots_waiting: newWaiting,
+      // Older screenshots not prepared at setup (part of counts.pending), left alone until the user wants more analyzed.
+      backlog,
+      // Waiting for analysis but held by an analyst right now, or by one that was stopped (free again within 15 minutes).
+      being_analyzed: leasedCount(this.db) || undefined,
       suggested_folders: sources.length === 0 ? await this.suggestedFolders() : undefined,
-      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic, photos, newWaiting),
+      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic, photos, {
+        newWaiting,
+        backlog,
+      }),
     };
   }
 
   /**
    * Scans every source (folders and Photos), one new `folder`, or only
-   * Photos, then extracts up to extractLimit pending items, newest first.
+   * Photos, then extracts up to extractLimit pending screenshots, newest
+   * first: a source's newest ones on its first scan, and after that only new
+   * and changed ones. The backlog left at setup is extracted only with
+   * readyForAnalysis.
    */
   async scan(options: ScanOptions = {}): Promise<ScanSummary> {
     let targets: Source[];
@@ -354,12 +383,17 @@ export class Library {
       }
     }
 
+    // A source scanned for the first time gets its newest screenshots
+    // prepared. After that only new and changed ones are, so a rescan never
+    // starts on the backlog the user chose not to process.
+    const firstScans = targets.filter((t) => t.initial_scan_at === null).map((t) => t.id);
     const sources = await this.reconcile(targets);
-    const limit = options.extractLimit ?? 250;
+    const ready = options.readyForAnalysis;
+    const limit = ready !== undefined ? Math.max(ready - pendingAnalysisCount(this.db), 0) : (options.extractLimit ?? 250);
     let extraction: ScanSummary["extraction"];
     const helper = this.helperPath();
     if (limit <= 0) {
-      extraction = { skipped: "extract_limit is 0" };
+      extraction = { skipped: ready !== undefined ? `${ready} or more are already ready for analysis` : "extract_limit is 0" };
     } else if (!helper) {
       extraction = { skipped: "shot-helper is not built; see get_status for the fix" };
     } else {
@@ -368,6 +402,8 @@ export class Library {
       const photosOff = sources.some((s) => s.kind === "photos" && s.unavailable);
       extraction = await extractPending(this.db, this.config, { helper, photos: photosOff ? undefined : this.photos }, {
         limit,
+        sources: targets.map((t) => t.id),
+        backlog: ready !== undefined ? "all" : firstScans,
         onProgress: options.onProgress,
       });
     }
@@ -376,16 +412,26 @@ export class Library {
     if (helper) finderTags = await this.syncFinderTags(targets.filter((t) => existsSync(t.location)));
 
     this.semantic.schedule();
-    const remaining = pendingCount(this.db);
+    const remaining = newPendingCount(this.db);
+    const backlog = backlogCount(this.db);
     const elsewhere = claimedCount(this.db);
     let next: string | undefined;
-    if (remaining > elsewhere) next = `${remaining - elsewhere} screenshots still need local extraction; scan again to continue.`;
-    else if (elsewhere > 0) next = `${elsewhere} screenshots are being extracted in the background and will be ready shortly.`;
+    if (remaining > elsewhere) {
+      next = `${remaining - elsewhere} new or changed screenshots still need local extraction; scan again to continue.`;
+    } else if (elsewhere > 0) {
+      next = `${elsewhere} screenshots are being extracted in the background and will be ready shortly.`;
+    } else if (backlog > 0) {
+      next =
+        `${backlog} older screenshots haven't been prepared. Leave them unless the user wants more analyzed; ` +
+        "then scan_screenshots({ ready_for_analysis }) prepares them, a block at a time.";
+    }
     return {
       sources,
       extraction,
       finder_tags: finderTags,
+      ready_for_analysis: pendingAnalysisCount(this.db),
       remaining_pending: remaining,
+      backlog: backlog || undefined,
       extracting_elsewhere: elsewhere || undefined,
       next,
     };
@@ -444,8 +490,7 @@ export class Library {
           this.config,
           { helper, photos: photosOff ? undefined : this.photos },
           {
-            limit: options.limit ?? 250,
-            onlyNew: true,
+            limit: options.limit ?? 250, // new and changed screenshots only, never the backlog
             concurrency: options.concurrency,
             deadline: Date.now() + (options.budgetMs ?? 3 * 60_000),
           },
@@ -642,11 +687,13 @@ export class Library {
   }
 
   /** Leases the next screenshots needing analysis (or specific ids), with absolute thumbnail paths. */
-  analysisBatch(options: { limit?: number; ids?: string[] } = {}): { items: BatchItem[]; remaining: number } {
+  analysisBatch(options: { limit?: number; ids?: string[] } = {}): { items: BatchItem[]; remaining: number; leased: number } {
     const items = claimBatch(this.db, { limit: Math.min(Math.max(options.limit ?? 6, 1), 12), ids: options.ids });
     for (const item of items) item.thumb_path = absoluteThumbPath(this.config, item.thumb_path);
+    const mine = new Set(items.map((i) => i.id));
     const remaining = pendingAnalysisCount(this.db) - items.filter((i) => !options.ids?.includes(i.id)).length;
-    return { items, remaining: Math.max(remaining, 0) };
+    const leased = leasedCount(this.db) - [...mine].filter((id) => !options.ids?.includes(id)).length;
+    return { items, remaining: Math.max(remaining, 0), leased: Math.max(leased, 0) };
   }
 
   saveAnalyses(analyses: AnalysisInput[], model?: string): SaveResult & { remaining: number } {
@@ -829,7 +876,7 @@ function nextSteps(
   tagging: { tags: number; untagged: number },
   semantic: SemanticStatus,
   photos: PhotosStatus,
-  newWaiting: number,
+  { newWaiting, backlog }: { newWaiting: number; backlog: number },
 ): string[] {
   const steps: string[] = [];
   if (!helperReady) steps.push("The native helper is missing (see helper.fix), so screenshots can't be extracted.");
@@ -844,7 +891,8 @@ function nextSteps(
     return steps;
   }
   if (photos.connected && photos.fix) steps.push(`Photos is connected but unavailable: ${photos.fix}`);
-  if (counts.pending) steps.push(`${counts.pending} screenshots await local extraction: call scan_screenshots.`);
+  const pendingNew = (counts.pending ?? 0) - backlog;
+  if (pendingNew > 0) steps.push(`${pendingNew} new or changed screenshots await local extraction: call scan_screenshots.`);
   if (counts.extracted) {
     const fresh = newWaiting ? ` (${newWaiting} of them new since setup; mention them, and analyze only after a yes)` : "";
     steps.push(`${counts.extracted} screenshots await analysis${fresh}: get_analysis_batch, then save_analyses.`);
@@ -868,6 +916,12 @@ function nextSteps(
     steps.push(`Semantic search has a problem: ${semantic.error}`);
   }
   if (!steps.length) steps.push("Library is up to date. Search with search_screenshots.");
+  if (backlog > 0) {
+    steps.push(
+      `${backlog} older screenshots weren't prepared at setup. Leave them unless the user wants more analyzed; ` +
+        "then scan_screenshots({ ready_for_analysis }) prepares them, a block of up to 500 at a time.",
+    );
+  }
   return steps;
 }
 

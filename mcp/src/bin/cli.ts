@@ -14,6 +14,7 @@ const USAGE = `usage: memvana-shot <command> [options]
   status                         library location, helper, sources, Photos access, counts
   scan [folder] [--limit N]      discover new/changed screenshots and extract up to N (default 250)
   scan --photos [--limit N]      the same for the Photos library only
+  scan --ready N                 also prepare older screenshots until N are ready for analysis
   photos connect [--limit N]     ask for Photos access (macOS prompts once), then scan Photos
   photos settings                open the Photos pane of System Settings if access is off
   catch-up                       what each new Claude session runs quietly: rescan, extract new screenshots
@@ -44,6 +45,7 @@ const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
     limit: { type: "string" },
+    ready: { type: "string" },
     status: { type: "string" },
     also: { type: "string" },
     type: { type: "string" },
@@ -87,6 +89,7 @@ try {
           folder: arg,
           photos: values.photos,
           extractLimit: limit,
+          readyForAnalysis: values.ready === undefined ? undefined : Number(values.ready),
           onProgress: progress("extracting"),
         }),
       );

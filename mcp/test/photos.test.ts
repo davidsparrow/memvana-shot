@@ -121,11 +121,12 @@ describe("Photos library", needsHelper, () => {
     assert.equal(t.library.list({ limit: 200 }).length, 2, "nothing marked missing");
     assert.ok(!photos.calls.slice(-1).includes("extract"), "no extraction attempted while access is off");
 
-    // A folder scan doesn't check Photos first, so extraction finds out itself.
+    // A folder scan extracts only that folder, so Photos being off doesn't get in its way.
     const folderScan = await t.library.scan({ folder: t.folder });
-    assert.ok("photos_unavailable" in folderScan.extraction);
-    assert.match(folderScan.extraction.photos_unavailable ?? "", /weren't extracted/);
+    assert.ok("succeeded" in folderScan.extraction);
     assert.equal(folderScan.extraction.succeeded, 5, "folder screenshots still get extracted");
+    assert.equal(folderScan.extraction.photos_unavailable, undefined);
+    assert.ok(!photos.calls.slice(-1).includes("extract"), "still no extraction attempted from Photos");
 
     const status = await t.library.status();
     assert.match(status.photos.fix ?? "", /turn on Memvana Shot/);

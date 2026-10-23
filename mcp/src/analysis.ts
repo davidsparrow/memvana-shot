@@ -152,6 +152,17 @@ export function pendingAnalysisCount(db: Db): number {
   return row.n;
 }
 
+/** Screenshots waiting for analysis that another analyst holds right now (or held when it was stopped). */
+export function leasedCount(db: Db): number {
+  const row = db
+    .prepare(`
+      SELECT COUNT(*) AS n FROM screenshots
+      WHERE status = 'extracted' AND ignored = 0 AND missing_since IS NULL AND analysis_claimed_until > ?
+    `)
+    .get(now()) as { n: number };
+  return row.n;
+}
+
 /**
  * Leases up to `limit` screenshots that need analysis (newest first), or the
  * specific `ids` asked for (for a second look). Leased items are skipped by
