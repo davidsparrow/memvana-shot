@@ -14,6 +14,7 @@ const USAGE = `usage: memvana-shot <command> [options]
   status                         library location, helper, sources, Photos access, counts
   scan [folder] [--limit N]      discover new/changed screenshots and extract up to N (default 250)
   scan --photos [--limit N]      the same for the Photos library only
+  scan --ready N                 also prepare older screenshots until N are ready for analysis
   photos connect [--limit N]     ask for Photos access (macOS prompts once), then scan Photos
   photos settings                open the Photos pane of System Settings if access is off
   catch-up                       what each new Claude session runs quietly: rescan, extract new screenshots
@@ -23,6 +24,8 @@ const USAGE = `usage: memvana-shot <command> [options]
                                  M: ${SEARCH_MODES.join("|")} (auto adds meaning when set up)
   related <id> [--limit N]       screenshots related to one, and why
   stats [--after D] [--before D] what you've been screenshotting
+  interests [--after D] [--before D] [--limit N]
+                                 subjects you keep saving screenshots about
   open <id> [--reveal]           open the original (or reveal it in Finder); Photos opens a copy
 
   semantic                       semantic search status
@@ -44,6 +47,7 @@ const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
     limit: { type: "string" },
+    ready: { type: "string" },
     status: { type: "string" },
     also: { type: "string" },
     type: { type: "string" },
@@ -87,6 +91,7 @@ try {
           folder: arg,
           photos: values.photos,
           extractLimit: limit,
+          readyForAnalysis: values.ready === undefined ? undefined : Number(values.ready),
           onProgress: progress("extracting"),
         }),
       );
@@ -176,6 +181,9 @@ try {
     }
     case "stats":
       print(library.stats({ after: values.after, before: values.before }));
+      break;
+    case "interests":
+      print(library.interests({ after: values.after, before: values.before, limit }));
       break;
     case "open":
       if (!arg) throw new Error("open needs an id");

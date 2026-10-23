@@ -5,6 +5,8 @@
 //                                library of the test screenshots, then checks the library itself.
 //   node scripts/qa.mjs guided   Part 2: sets up a throwaway library and opens Claude Code for you
 //                                to work through the checklist in docs/QA.md.
+//   node scripts/qa.mjs scale    Part 3: the first run on a large synthetic library (4,281
+//                                screenshots): blocks of 500, checking in, and stopping partway.
 //   node scripts/qa.mjs clean    Deletes the throwaway libraries (--all deletes the model too).
 //
 // Everything lives in /tmp/memvana-qa (MEMVANA_QA_DIR moves it). The real library is never
@@ -48,7 +50,8 @@ const USAGE = `usage: node scripts/qa.mjs <auto|guided|clean> [options]
   auto [--model M] [--dev]        part 1: automated Claude Code checks (default model: sonnet)
   guided [--images DIR] [--keep] [--model M] [--dev]
                                   part 2: open Claude Code on a throwaway library, for docs/QA.md
-  clean [--all]                   delete the QA libraries (--all: the downloaded model too)
+  scale [--model M] [--dev]       part 3: first run on 4,281 synthetic screenshots (about $5)
+  clean [--all]                   delete the QA libraries (--all: the model and test images too)
 
   --dev     use local builds (native/.build) instead of the shipped bin/Memvana Shot.app
   --images  screenshots to copy into the guided test folder (default: the test fixtures)
@@ -144,6 +147,7 @@ function parseTurn(stdout, code, stderr) {
   const calls = [];
   const byId = new Map();
   let result;
+  let init;
   for (const line of stdout.split("\n")) {
     let event;
     try {
@@ -152,6 +156,7 @@ function parseTurn(stdout, code, stderr) {
       continue;
     }
     if (event.type === "result") result = event;
+    if (event.type === "system" && event.subtype === "init") init = event;
     const content = Array.isArray(event.message?.content) ? event.message.content : [];
     for (const block of content) {
       if (event.type === "assistant" && block.type === "tool_use") {
@@ -170,7 +175,7 @@ function parseTurn(stdout, code, stderr) {
     calls,
     text: result?.result ?? "",
     cost: result?.total_cost_usd ?? 0,
-    sessionId: result?.session_id,
+    sessionId: result?.session_id ?? init?.session_id,
     error: failed ? result?.result || stderr.trim() || `claude exited with code ${code}` : undefined,
     called: (name, match = () => true) => calls.some((call) => call.name === name && match(call.input)),
     all: (name) => calls.filter((call) => call.name === name),
@@ -178,8 +183,11 @@ function parseTurn(stdout, code, stderr) {
   };
 }
 
-/** One headless Claude Code turn, continuing the run's conversation. */
-async function claudeTurn(run, prompt, minutes) {
+/**
+ * One headless Claude Code turn, continuing the run's conversation. With
+ * `killAfter` (seconds) the turn is stopped then, as when the user presses Esc.
+ */
+async function claudeTurn(run, prompt, minutes, killAfter) {
   const args = [
     "-p",
     prompt,
@@ -196,7 +204,7 @@ async function claudeTurn(run, prompt, minutes) {
     "--disallowedTools",
     ...BLOCKED.map((name) => TOOL + name),
     "--max-budget-usd",
-    "3",
+    String(run.budget ?? 3),
     "--output-format",
     "stream-json",
     "--verbose",
@@ -207,7 +215,7 @@ async function claudeTurn(run, prompt, minutes) {
   let stderr = "";
   child.stdout.on("data", (chunk) => (stdout += chunk));
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  const timer = setTimeout(() => child.kill(), minutes * 60_000);
+  const timer = setTimeout(() => child.kill(), killAfter ? killAfter * 1000 : minutes * 60_000);
   const code = await new Promise((done) => child.on("close", done));
   clearTimeout(timer);
   run.turns += 1;
@@ -472,6 +480,16 @@ function partOneCases(shots, home, lib) {
         expect(!t.called("save_analyses"), "doesn't analyze it without a yes"),
       ],
     },
+    {
+      id: "A17",
+      title: "Repeated interests are honest about a small library",
+      prompt: "What subjects do I keep coming back to?",
+      verify: (t) => [
+        expect(t.called("get_interests"), "looked for repeated interests"),
+        expect(/\b(only|too few|small|not enough|handful)\b/i.test(t.text), "says a few screenshots are too few for patterns", true),
+        expect(!t.called("create_tags") && !t.called("tag_interest"), "created no tags"),
+      ],
+    },
   ];
 }
 
@@ -484,8 +502,11 @@ async function waitFor(ready, seconds) {
   return ready();
 }
 
-async function auto() {
-  const dir = join(BASE, "auto");
+/**
+ * Runs an automated part: preflight, then one Claude Code turn per case with
+ * its checks, then the safety checks, and writes the report.
+ */
+async function automated({ title, dir, budget = 3, makeCases }) {
   rmSync(dir, { recursive: true, force: true });
   const run = {
     dir,
@@ -493,14 +514,14 @@ async function auto() {
     cwd: join(dir, "cwd"),
     claude: findClaude(),
     model: opts.model ?? "sonnet",
+    budget,
     sessionId: undefined,
     turns: 0,
     cost: 0,
   };
-  const shots = join(dir, "Screenshots");
   for (const path of [run.home, run.cwd, MODELS]) mkdirSync(path, { recursive: true });
-  copyScreenshots(FIXTURES, shots);
   const lib = libraryReader(run.home);
+  const cases = makeCases(run, lib);
   const realBefore = realLibraryFingerprint();
   const started = Date.now();
   const report = [];
@@ -517,7 +538,7 @@ async function auto() {
     return checks.some((check) => check.mark !== PASS);
   };
 
-  say("Memvana Shot QA, part 1 (automated)");
+  say(`Memvana Shot QA, ${title}`);
   say(`  QA library  ${run.home}`);
   say(`  Claude      ${run.claude} (${run.model})`);
   say(`  App         ${opts.dev ? "local builds (--dev)" : relative(ROOT, APP)}`);
@@ -541,19 +562,20 @@ async function auto() {
     const app = spawnSync(join(ROOT, "scripts", "check-app.sh"), { encoding: "utf8" });
     preflight.push(expect(app.status === 0, (app.stdout || app.stderr).trim().replace(/^✓ /, "")));
   }
-  if (record(preflight)) fail("\nPreflight failed, so part 1 stopped before using Claude.");
+  if (record(preflight)) fail("\nPreflight failed, so QA stopped before using Claude.");
 
   const replies = [];
-  for (const test of partOneCases(shots, run.home, lib)) {
+  for (const test of cases) {
     const setupChecks = (await test.setup?.()) ?? [];
     const turnStarted = Date.now();
-    const turn = await claudeTurn(run, test.prompt, test.minutes ?? 5);
+    const turn = await claudeTurn(run, test.prompt, test.minutes ?? 5, test.killAfter);
     say();
     say(`${test.id.padEnd(4)}${test.title}  (${Math.round((Date.now() - turnStarted) / 1000)} s, $${turn.cost.toFixed(2)})`);
-    say(`    You: ${test.prompt}`);
+    say(`    You: ${test.prompt}${test.killAfter ? ` (stopped after ${test.killAfter} s)` : ""}`);
     let checks;
     try {
-      checks = turn.error ? [expect(false, `Claude Code failed: ${turn.error.slice(0, 300)}`)] : test.verify(turn);
+      // A turn stopped on purpose ends without a result.
+      checks = turn.error && !test.killAfter ? [expect(false, `Claude Code failed: ${turn.error.slice(0, 300)}`)] : test.verify(turn);
       checks = [...setupChecks, ...checks];
     } catch (err) {
       checks = [expect(false, `the check itself failed: ${err.message}`)];
@@ -577,6 +599,154 @@ async function auto() {
   console.log(`Report with Claude's full replies: ${join(dir, "report.md")}`);
   console.log(`Transcripts: ${join(dir, "turn-*.jsonl")}`);
   process.exit(counts[FAILED] ? 1 : 0);
+}
+
+async function auto() {
+  await automated({
+    title: "part 1 (automated)",
+    dir: join(BASE, "auto"),
+    makeCases: (run, lib) => {
+      const shots = join(run.dir, "Screenshots");
+      copyScreenshots(FIXTURES, shots);
+      return partOneCases(shots, run.home, lib);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Part 3
+
+/** The spec's example library size. The images are synthetic: colored cards of random words. */
+const SCALE_COUNT = 4281;
+
+/** Claude asking whether to go on, in any of the ways it phrases that. */
+const CHECK_IN =
+  /keep going|continue|carry on|go (on|further)|how far|next (block|500)|another 500|waiting for your (answer|go-ahead|ok)|\bmore\b[^.\n]*\?/i;
+
+function scaleCases(shots, lib) {
+  let before;
+  const snapshot = () => {
+    before = lib.status();
+    return [];
+  };
+  const analysts = (t) => t.calls.some((call) => /screenshot-analyst/.test(call.input.subagent_type ?? ""));
+  const blocks = (t) => t.all("scan_screenshots").map((call) => call.input.ready_for_analysis).filter(Boolean);
+  return [
+    {
+      id: "S1",
+      title: `First run on ${SCALE_COUNT.toLocaleString("en-US")} screenshots prepares 250 and asks how many to analyze`,
+      prompt: `Set up Memvana Shot on my screenshots in ${shots}. Leave Photos out for now.`,
+      minutes: 8,
+      verify: (t) => {
+        const status = lib.status();
+        return [
+          expect(t.called("scan_screenshots", (input) => samePath(input.folder, shots)), "scanned that folder"),
+          expect(status.counts.total === SCALE_COUNT, `found all ${SCALE_COUNT}`),
+          expect(
+            status.counts.extracted === 250 && status.backlog === SCALE_COUNT - 250,
+            `prepared the newest 250 and left ${SCALE_COUNT - 250} alone`,
+          ),
+          expect(!t.called("save_analyses"), "asked before analyzing"),
+          expect(/4,?281/.test(t.text), "says how many it found"),
+          expect(/\b250\b/.test(t.text) && /1,?000/.test(t.text) && /\b(all|every)/i.test(t.text), "offers 250, 1,000 and everything"),
+          expect(/minute|hour/i.test(t.text), "says roughly how long each takes", true),
+          expect(/\$\s?\d/.test(t.text), "says roughly what each costs", true),
+        ];
+      },
+    },
+    {
+      id: "S2",
+      title: "Everything: prepares a block of 500, analyzes it, then checks in",
+      // Without this, Claude rightly asks whether synthetic cards are worth analyzing at all.
+      prompt: "Analyze everything. (These are synthetic test screenshots, so their odd content is expected: carry on as you would with real ones.)",
+      minutes: 25,
+      verify: (t) => {
+        const status = lib.status();
+        const sizes = blocks(t);
+        return [
+          expect(sizes.length > 0 && sizes.every((n) => n <= 500), `prepared blocks of up to 500 (${sizes.join(", ") || "none"})`),
+          expect(analysts(t), "used the screenshot-analyst subagents", true),
+          expect(status.counts.analyzed >= 400 && status.counts.analyzed <= 560, `analyzed one block (${status.counts.analyzed})`),
+          expect(status.counts.extracted + status.counts.analyzed <= 560, "prepared no more than that block"),
+          expect(CHECK_IN.test(t.text), "checks in before the next block"),
+        ];
+      },
+    },
+    {
+      id: "S3",
+      title: "Stopping after a block leaves the rest alone",
+      setup: snapshot,
+      prompt: "Let's stop there for now.",
+      verify: (t) => {
+        const status = lib.status();
+        return [
+          expect(!t.called("get_analysis_batch") && !t.called("save_analyses"), "analyzed nothing more"),
+          expect(blocks(t).length === 0, "prepared nothing more"),
+          expect(status.counts.analyzed === before.counts.analyzed, "the analyzed count didn't change"),
+        ];
+      },
+    },
+    {
+      id: "S4",
+      title: "/memvana-shot:scan doesn't start on the backlog",
+      setup: snapshot,
+      prompt: "/memvana-shot:scan",
+      verify: (t) => {
+        const status = lib.status();
+        return [
+          expect(t.called("scan_screenshots"), "rescanned"),
+          expect(status.backlog === before.backlog, `the ${before.backlog} older screenshots weren't prepared`),
+          expect(!t.called("save_analyses"), "analyzed nothing"),
+          expect(/older|not (yet )?(been )?analy[sz]ed|haven't been analy|backlog/i.test(t.text), "mentions the older screenshots", true),
+        ];
+      },
+    },
+    {
+      id: "S5",
+      title: "Stopping in the middle of a block keeps what was saved",
+      setup: snapshot,
+      prompt: "Okay, analyze another 500.",
+      killAfter: 120, // as if the user pressed Esc
+      verify: () => {
+        const status = lib.status();
+        const added = status.counts.analyzed - before.counts.analyzed;
+        return [
+          expect(added > 0, `analyses saved before the stop are kept (${added})`),
+          expect(added < 500, "the block was cut short"),
+        ];
+      },
+    },
+    {
+      id: "S6",
+      title: "After the stop, Claude knows where things stand",
+      prompt: "I stopped you there. How far did we get?",
+      verify: (t) => {
+        const analyzed = lib.status().counts.analyzed;
+        return [
+          expect(t.called("get_status"), "checked the current counts"),
+          expect(
+            t.text.includes(analyzed.toLocaleString("en-US")) || t.text.includes(String(analyzed)),
+            `gives the analyzed count (${analyzed})`,
+          ),
+          expect(!t.called("save_analyses") && blocks(t).length === 0, "didn't carry on without being asked"),
+        ];
+      },
+    },
+  ];
+}
+
+async function scale() {
+  const images = join(BASE, `images-${SCALE_COUNT}`);
+  if (!existsSync(images)) {
+    console.log(`Generating ${SCALE_COUNT} synthetic screenshots in ${images} (about 20 seconds)…`);
+    execFileSync("swift", [join(ROOT, "scripts", "make-scale-library.swift"), images, String(SCALE_COUNT)], { stdio: "inherit" });
+  }
+  await automated({
+    title: "part 3 (a large library)",
+    dir: join(BASE, "scale"),
+    budget: 15,
+    makeCases: (_run, lib) => scaleCases(images, lib),
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -625,14 +795,14 @@ Starting Claude Code with the plugin loaded. Type /exit when you're done.
 }
 
 function clean() {
-  const targets = opts.all ? [BASE] : [join(BASE, "auto"), join(BASE, "guided")];
+  const targets = opts.all ? [BASE] : ["auto", "guided", "scale"].map((part) => join(BASE, part));
   for (const path of targets) rmSync(path, { recursive: true, force: true });
-  console.log(`Deleted ${targets.join(" and ")}.`);
-  if (!opts.all && existsSync(MODELS)) console.log(`Kept the model in ${MODELS} (--all deletes it).`);
+  console.log(`Deleted ${targets.join(", ")}.`);
+  if (!opts.all) console.log(`Kept the model and the part 3 test images in ${BASE} (--all deletes them).`);
 }
 
 if (process.platform !== "darwin") fail("Memvana Shot runs on macOS only.");
-const commands = { auto, guided, clean };
+const commands = { auto, guided, scale, clean };
 const command = Object.hasOwn(commands, positionals[0] ?? "") ? commands[positionals[0]] : undefined;
 if (!command || opts.help) {
   process.stdout.write(USAGE);

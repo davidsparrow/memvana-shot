@@ -14,9 +14,10 @@ You can then ask in plain language:
 > **Status: early build, on the way to V1.0.** Screenshots from your Photos
 > library (including iPhone screenshots synced through iCloud Photos) and from
 > folders, on-device extraction, Claude-written understanding, keyword and
-> semantic search, related screenshots, tags (including Finder tags and your
-> Photos albums), your own edits, and a quiet catch-up when each Claude
-> session starts work today. The guided public release comes next. See
+> semantic search, related screenshots, repeated interests, tags (including
+> Finder tags and your Photos albums), your own edits, a guided first run for
+> libraries of any size, and a quiet catch-up when each Claude session starts
+> work today. The privacy guide and the public release come next. See
 > [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
@@ -47,7 +48,9 @@ Claude ── Memvana Shot plugin ──┬── Skill             (how Claude 
    legend" finds a photo of Jimi Hendrix, in any of 100+ languages.
 4. **Connect.** Ask for screenshots related to one and Memvana Shot explains
    each link: a similar subject, a look-alike or near-duplicate image, shared
-   tags or names, the same album, or captures made minutes apart.
+   tags or names, the same album, or captures made minutes apart. Ask what you
+   keep coming back to, and it finds your repeated interests: "11 screenshots
+   about pickleball equipment over four months".
 5. **Organize.** Tags are your own top-level groups. Claude proposes a starter
    set and suggests tags per screenshot. If you already sort screenshots into
    Photos albums or folders, it offers those as tags first. You confirm, add
@@ -98,13 +101,17 @@ In Claude Code with the plugin loaded:
 > Set up Memvana Shot on my screenshots and tell me what I've been saving.
 
 Claude offers your Photos library (macOS asks you once to allow access) and
-your screenshot folder, scans what you pick, offers to analyze the newest 250,
-and then gives you an overview of your recurring subjects. After that, ask
-anything:
+your screenshot folder, and scans what you pick. Then it asks how many to
+analyze: the newest 250, 1,000, or everything, with rough times and costs
+(analysis runs in your Claude session, at roughly a cent per screenshot of
+usage at API prices). A large library goes in blocks of 500, and you can stop
+any time without losing anything. Then you get an overview of your recurring
+subjects and repeated interests. After that, ask anything:
 
 > Find the screenshot of that tortilla chip bag with the yellow label.
 > What have I been screenshotting since June?
 > Show me screenshots related to that one.
+> What subjects do I keep coming back to?
 > Tag those three as Kitchen remodel, and add a note to the first one: "ask about lead time".
 
 Maintenance commands are there if you want them: `/memvana-shot:status`,
@@ -120,6 +127,7 @@ npm run build:app      # builds "Memvana Shot.app" for this Mac (needed for Phot
 npm test
 npm run qa             # end-to-end checks in real Claude Code sessions (docs/QA.md)
 npm run qa:guided      # the hands-on checklist: Photos, System Settings, Preview, Finder
+npm run qa:scale       # the first run on 4,281 synthetic screenshots (about $5)
 npm run scale-test     # times a synthetic library of 10,000 screenshots
 
 # try the pipeline without Claude:
@@ -130,6 +138,7 @@ node mcp/dist/cli.mjs search "order receipt"
 node mcp/dist/cli.mjs tags
 node mcp/dist/cli.mjs semantic setup   # optional: download the embedding model
 node mcp/dist/cli.mjs related <id>
+node mcp/dist/cli.mjs interests        # subjects you keep saving screenshots about
 
 # run the real-model tests once the model is installed:
 MEMVANA_SHOT_MODELS="$HOME/Library/Application Support/Memvana Shot/models" npm test

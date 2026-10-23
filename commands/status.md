@@ -8,7 +8,8 @@ report about their Memvana Shot library:
 
 - Sources: the folders being watched and, if connected, Photos (with whether
   access is still on), and when each was last scanned.
-- Screenshot counts: total, analyzed, waiting for analysis, missing or with errors.
+- Screenshot counts: total, analyzed, waiting for analysis, older ones not
+  analyzed yet (`backlog`), missing or with errors.
 - Tags: how many, and the largest few with counts.
 - Semantic search: ready (how many indexed, how many waiting), not set up, or downloading.
 - The two or three most useful next steps from `next_steps`, phrased as offers

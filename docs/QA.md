@@ -2,7 +2,7 @@
 
 Memvana Shot has no web interface. People use it inside Claude Code, plus a
 few macOS windows: the Photos permission prompt, System Settings, Preview and
-Finder. QA happens in those same places, in two parts:
+Finder. QA happens in those same places, in three parts:
 
 - **Part 1, automated** (`npm run qa`). A script drives real Claude Code
   sessions with the plugin loaded, against a throwaway library of the test
@@ -13,16 +13,21 @@ Finder. QA happens in those same places, in two parts:
   real Claude Code window. This part covers what a script can't: the Photos
   permission, System Settings, Preview and Finder windows, and whether the
   conversation feels right. It takes about 30 minutes.
+- **Part 3, a large library** (`npm run qa:scale`). Like part 1, but the
+  first run happens on 4,281 synthetic screenshots: preparing the newest 250,
+  analyzing "everything" in blocks of 500 with a check-in after each, and
+  stopping partway. It takes about 15 minutes and costs about $5, so run it
+  when the first run or batching changes, not before every PR.
 
-The 109 unit tests (`npm test`) cover the tools' logic. This QA covers the
+The 129 unit tests (`npm test`) cover the tools' logic. This QA covers the
 rest: Claude following the Skill, the plugin loading, the signed app, and the
 macOS integration.
 
-**Safety.** Both parts use a throwaway library in `/tmp/memvana-qa`. Your
+**Safety.** Every part uses a throwaway library in `/tmp/memvana-qa`. Your
 real library (`~/Library/Application Support/Memvana Shot`) is never opened,
-and part 1 checks that it wasn't touched. Part 1 never connects Photos, opens
-windows or downloads the meaning model. In part 2, Photos is read-only, as
-always.
+and parts 1 and 3 check that it wasn't touched. They never connect Photos,
+open windows or download the meaning model. In part 2, Photos is read-only,
+as always.
 
 ## Before you start
 
@@ -75,12 +80,37 @@ another model.
 | A14 | `/memvana-shot:rebuild-index` | Rebuilds, and search still works |
 | A15 | `/memvana-shot:status` | Reads status and stats, and mentions the missing screenshot (!) |
 | A16 | Anything new in my screenshots since last time? (after the script adds a screenshot and runs the session-start hook the way Claude Code does) | The hook returns at once; its detached catch-up prepares the new screenshot without analyzing it; Claude mentions the 1 new screenshot and doesn't analyze it |
+| A17 | What subjects do I keep coming back to? | Calls `get_interests`; says 5 screenshots are too few to see patterns (!); creates no tags |
 | Z | (nothing; this case runs after the last turn) | Photos was never connected; your real library wasn't touched |
 
 (!) marks a soft check: when it fails you get a warning, not a failure.
 
 Everything from the run stays in `/tmp/memvana-qa/auto` until the next run:
 the report, one transcript per turn (`turn-01.jsonl`…), and the library.
+
+## Part 3: a large library
+
+In VS Code, open a terminal (**Terminal > New Terminal**) in the repo folder
+and run:
+
+```sh
+npm run qa:scale
+```
+
+The first run generates 4,281 synthetic screenshots (colored cards of random
+words) in `/tmp/memvana-qa/images-4281`, which takes about 20 seconds and is
+kept for later runs. Then it works like part 1, in one conversation:
+
+| Case | You type | Checked |
+|---|---|---|
+| S1 | Set up Memvana Shot on my screenshots in … Leave Photos out for now. | Finds all 4,281; prepares only the newest 250 and leaves the rest; asks before analyzing; offers 250, 1,000 and everything, with rough times (!) and costs (!) |
+| S2 | Analyze everything. (plus a note that the screenshots are synthetic test data) | Prepares blocks of at most 500 (`ready_for_analysis`); uses the analyst subagents (!); analyzes one block, prepares no more than it, then asks before the next |
+| S3 | Let's stop there for now. | Analyzes and prepares nothing more |
+| S4 | `/memvana-shot:scan` | Rescans without preparing the older screenshots; mentions them (!) |
+| S5 | Okay, analyze another 500. (the script stops the turn after 2 minutes, like pressing Esc) | The analyses saved before the stop are kept; the block was cut short |
+| S6 | I stopped you there. How far did we get? | Checks `get_status`, gives the analyzed count, and doesn't carry on unasked |
+
+Its report and transcripts are in `/tmp/memvana-qa/scale`.
 
 ## Part 2: guided
 
@@ -320,6 +350,35 @@ Type: `Find the screenshot about a racket sport.`
 The model downloads to `/tmp/memvana-qa/models` and is kept between runs, so
 later QA runs, part 1 included, use search by meaning too.
 
+### Optional: repeated interests (your own screenshots, about $1)
+
+This needs at least 20 analyzed screenshots that are really yours, so it
+analyzes some of your Photos screenshots in the throwaway library. Skip it if
+you'd rather not send them to Claude.
+
+Type: `Prepare and analyze my newest 100 screenshots from Photos.`
+
+- [ ] It says roughly how long that takes and what it costs, then waits for
+      your yes. After your yes, it analyzes them.
+
+Type: `What subjects do I keep coming back to?`
+
+- [ ] It names 3–5 specific subjects with counts and time spans (such as
+      "chiropractor marketing: 20 screenshots from January to April"), not
+      just broad themes.
+- [ ] Wordings of the same subject are combined, not listed one by one.
+- [ ] It offers a tag for one or more of them, and creates nothing yet.
+
+Answer yes to one tag and no to another, for example: `Yes to a tag for the
+first one. No to the second.`
+
+- [ ] `/memvana-shot:tags` shows the new tag on that interest's screenshots.
+
+Type: `What subjects do I keep coming back to?` again.
+
+- [ ] It doesn't offer a tag for the one you said no to, or for the one that
+      now has a tag.
+
 ### G10. Finish
 
 Type: `/exit`
@@ -336,13 +395,15 @@ working on this repo.
 ## Cleaning up
 
 ```sh
-npm run qa:clean          # deletes /tmp/memvana-qa/auto and /tmp/memvana-qa/guided
-npm run qa:clean -- --all # also deletes the downloaded meaning model
+npm run qa:clean          # deletes the part 1, 2 and 3 libraries in /tmp/memvana-qa
+npm run qa:clean -- --all # also deletes the downloaded meaning model and the part 3 images
 ```
 
 ## Not covered yet
 
 - Installing from the GitHub marketplace into a fresh Claude Code. That
   becomes a release step once the repo moves to its final home.
-- Libraries of thousands of screenshots (planned with the V1.0 scale test).
+- "Analyze everything" all the way through a library of thousands. Part 3
+  covers the first block and stopping; `npm run scale-test` times every tool
+  on 10,000 screenshots without Claude.
 - Intel Macs, and the Claude desktop app.

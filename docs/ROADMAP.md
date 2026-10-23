@@ -40,8 +40,8 @@ is deliberately not a general photo manager.
 - [x] Photos albums and descriptive folders as groups: searchable, used in related screenshots, and offered as tags (never applied without a yes)
 - [x] Silent catch-up when a Claude session starts: new screenshots are found and prepared on-device, and analyzed only after you agree
 - [x] Safe batching for large libraries (tested with 10,000 screenshots)
-- [ ] Guided first run ("Found 4,281 screenshots. Analyze recent 250?")
-- [ ] Candidate clusters and repeated interests
+- [x] Guided first run ("Found 4,281 screenshots. Analyze the newest 250?"), with rough times and costs, and "everything" in blocks of 500 that check in as they go
+- [x] Repeated interests: subjects you keep saving screenshots about, with their time span, offered as tags (never applied without a yes)
 - [ ] Privacy explainer and install guide
 
 ## Later

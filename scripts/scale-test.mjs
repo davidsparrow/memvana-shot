@@ -47,10 +47,9 @@ rmSync(home, { recursive: true, force: true });
 const library = Library.open({ home, pluginRoot: ROOT }, { photos: null });
 console.log(`\nMemvana Shot scale test: ${count} screenshots\n`);
 
-await time("first scan: discover and record (no extraction)", () => library.scan({ folder: images, extractLimit: 0 }));
-await time("extract the newest 250 (what setup does)", () => library.scan({ extractLimit: 250 }));
-await time(`extract the other ${count - 250}, 1,000 per scan`, async () => {
-  while ((await library.scan({ extractLimit: 1000 })).remaining_pending > 0);
+await time("first scan: discover, then extract the newest 250", () => library.scan({ folder: images }));
+await time(`extract the other ${count - 250}, 500 per scan (as "analyze everything" does)`, async () => {
+  for (let ready = 750; (await library.scan({ readyForAnalysis: ready })).backlog; ready += 500);
 });
 
 // Analyses written from each image's OCR text, as a stand-in for Claude's.
@@ -105,6 +104,7 @@ await time("search: with a date range and a tag", () =>
 let i = 0;
 await time("related screenshots (scores every candidate)", () => library.related(someIds[i++ % someIds.length]), { repeat: 10 });
 await time("library stats (including groups)", () => library.stats(), { repeat: 5 });
+await time("repeated interests", () => library.interests(), { repeat: 5 });
 await time("status", () => library.status(), { repeat: 5 });
 await time("list the newest 25", () => library.list(), { repeat: 5 });
 await time("tags with counts", () => library.listTags(), { repeat: 5 });
