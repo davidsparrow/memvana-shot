@@ -5,7 +5,7 @@ import { NAME_SQL } from "./names.ts";
 // by screenshots.search_rowid, holding the *effective* details (the user's
 // edits win over Claude's analysis). Bump SEARCH_INDEX_VERSION whenever the
 // columns, weights or row SQL change; ensureSearchIndex() then rebuilds it.
-export const SEARCH_INDEX_VERSION = 4;
+export const SEARCH_INDEX_VERSION = 5;
 
 // Columns from most to least telling. SEARCH_WEIGHTS gives each column's bm25
 // weight in the same order.
@@ -21,9 +21,10 @@ export const SEARCH_COLUMNS = [
   "ocr",
   "labels", //   Vision classifier labels
   "filename", // meaningful folder and file-name words only (see names.ts)
+  "albums", //   meaningful words from the user's Photos album names
 ] as const;
 
-export const SEARCH_WEIGHTS = [8, 6, 7, 7, 6, 5, 5, 3, 1.5, 1, 4];
+export const SEARCH_WEIGHTS = [8, 6, 7, 7, 6, 5, 5, 3, 1.5, 1, 4, 5];
 
 const CREATE_SEARCH_INDEX = `
   CREATE VIRTUAL TABLE search_index USING fts5(
@@ -55,7 +56,8 @@ function indexRowsSql(where: string): string {
       COALESCE(u.detailed_description, a.detailed_description, '') || ' ' || COALESCE(a.content_type, ''),
       COALESCE(e.ocr_text, ''),
       COALESCE((SELECT group_concat(json_extract(value, '$.label'), ' ') FROM json_each(e.labels)), ''),
-      name_terms(${NAME_SQL})
+      name_terms(${NAME_SQL}),
+      album_terms(s.albums)
     FROM screenshots s
     JOIN extractions e ON e.screenshot_id = s.id
     LEFT JOIN analyses a ON a.screenshot_id = s.id
@@ -66,12 +68,17 @@ function indexRowsSql(where: string): string {
 
 /** Creates or rebuilds the index when its definition has changed. Runs on every open. */
 export function ensureSearchIndex(db: Db): void {
-  const row = db.prepare("SELECT value FROM meta WHERE key = 'search_index_version'").get() as
-    | { value: string }
-    | undefined;
-  if (row?.value === String(SEARCH_INDEX_VERSION)) return;
+  const current = () =>
+    (db.prepare("SELECT value FROM meta WHERE key = 'search_index_version'").get() as { value: string } | undefined)
+      ?.value === String(SEARCH_INDEX_VERSION);
+  if (current()) return;
   db.exec("BEGIN IMMEDIATE");
   try {
+    // Another process may have rebuilt it while this one waited for the write lock.
+    if (current()) {
+      db.exec("COMMIT");
+      return;
+    }
     db.exec("DROP TABLE IF EXISTS search_index");
     db.exec(CREATE_SEARCH_INDEX);
     rebuildSearchIndex(db);

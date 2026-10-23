@@ -440,8 +440,9 @@ export function createServer(library: Library): McpServer {
       title: "Library overview",
       description:
         "What the user has been screenshotting: totals, captures per month, content types, top topics, " +
-        "entities and source apps, optionally within a date range. Use for questions like \"what have I been " +
-        "saving lately?\" and for the first-run overview.",
+        "entities and source apps, optionally within a date range, plus the albums and folders the user " +
+        "sorted screenshots into (groups), which you can offer as tags. Use for questions like \"what have I " +
+        "been saving lately?\" and for the first-run overview.",
       inputSchema: {
         after: z.string().optional().describe("YYYY, YYYY-MM, YYYY-MM-DD or ISO time."),
         before: z.string().optional().describe("Exclusive upper bound, same formats."),
@@ -570,17 +571,24 @@ export function createServer(library: Library): McpServer {
         "Applies the user's tagging decision to screenshots. `add` puts tags on, creating tags that don't " +
         "exist yet and confirming any matching suggestions. `remove` takes tags off and records the user's " +
         "rejection, so the tag won't be suggested for those screenshots again. Use this only for what the " +
-        "user asked; use suggest_tags for your own guesses.",
+        "user asked; use suggest_tags for your own guesses. Instead of ids, `album` or `folder` applies the " +
+        "decision to every screenshot in that group (as get_library_stats lists it), once the user agrees " +
+        "to turn it into a tag.",
       inputSchema: {
-        ids: z.array(z.string()).min(1).max(200),
+        ids: z.array(z.string()).min(1).max(200).optional(),
+        album: z.string().min(1).optional().describe("Every screenshot in this Photos album, instead of ids."),
+        folder: z.string().min(1).optional().describe("Every screenshot in this folder, instead of ids."),
         add: z.array(z.string().min(1).max(40)).max(10).optional(),
         remove: z.array(z.string().min(1).max(40)).max(10).optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ ids, add, remove }) => {
+    async ({ ids, album, folder, add, remove }) => {
       try {
-        return json(library.tagScreenshots(ids, { add, remove }));
+        if ([ids, album, folder].filter((x) => x !== undefined).length !== 1) {
+          throw new Error("Give exactly one of ids, album or folder.");
+        }
+        return json(library.tagScreenshots(ids ?? (album !== undefined ? { album } : { folder: folder! }), { add, remove }));
       } catch (err) {
         return failure(err);
       }

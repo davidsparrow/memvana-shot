@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { migrations } from "./migrations.ts";
-import { nameTerms } from "./names.ts";
+import { albumTerms, nameTerms } from "./names.ts";
 import { ensureSearchIndex } from "./search-index.ts";
 
 export type Db = DatabaseSync;
@@ -26,6 +26,7 @@ export function openDb(path: string): Db {
   `);
   // Used by the search index (and its migrations) to index meaningful name words.
   db.function("name_terms", { deterministic: true }, (key) => nameTerms(String(key ?? "")));
+  db.function("album_terms", { deterministic: true }, (albums) => albumTerms(albums as string | null));
   migrate(db);
   ensureSearchIndex(db);
   return db;
@@ -47,6 +48,9 @@ function migrate(db: Db): void {
   for (const m of migrations) {
     if (m.version <= current) continue;
     transaction(db, () => {
+      // Another process (the MCP server, the CLI, a session-start catch-up)
+      // may have applied it while this one waited for the write lock.
+      if (schemaVersion(db) >= m.version) return;
       db.exec(m.sql);
       if (m.version === 1) {
         // A library id lets other tools recognise this exact library later.
@@ -95,6 +99,13 @@ export function getMeta(db: Db, key: string): string | undefined {
     | { value: string }
     | undefined;
   return row?.value;
+}
+
+export function setMeta(db: Db, key: string, value: string): void {
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(
+    key,
+    value,
+  );
 }
 
 export function now(): string {

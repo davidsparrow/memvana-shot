@@ -4,6 +4,7 @@ import { basename, extname, join, relative } from "node:path";
 import { dateFromFileName } from "./dates.ts";
 import { type Db, now, transaction } from "./db.ts";
 import type { PhotoAsset } from "./photos.ts";
+import { reindexScreenshot } from "./search-index.ts";
 
 export const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".heic", ".heif", ".webp", ".tif", ".tiff"]);
 
@@ -17,6 +18,8 @@ export interface Source {
   label: string | null;
   created_at: string;
   last_scan_at: string | null;
+  /** The first scan: screenshots discovered after it are new, earlier ones the backlog. */
+  initial_scan_at: string | null;
 }
 
 export interface DiscoveredFile {
@@ -47,6 +50,7 @@ export function ensureFolderSource(db: Db, folder: string): Source {
     label: basename(folder),
     created_at: now(),
     last_scan_at: null,
+    initial_scan_at: null,
   };
   db.prepare(
     "INSERT INTO sources (id, kind, location, label, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -67,6 +71,7 @@ export function ensurePhotosSource(db: Db): Source {
     label: "Photos",
     created_at: now(),
     last_scan_at: null,
+    initial_scan_at: null,
   };
   db.prepare(
     "INSERT INTO sources (id, kind, location, label, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -80,6 +85,24 @@ export function photosSource(db: Db): Source | undefined {
 
 export function listSources(db: Db): Source[] {
   return db.prepare("SELECT * FROM sources ORDER BY created_at").all() as unknown as Source[];
+}
+
+function markScanned(db: Db, source: Source, stamp: string): void {
+  db.prepare(
+    "UPDATE sources SET last_scan_at = ?, initial_scan_at = COALESCE(initial_scan_at, ?) WHERE id = ?",
+  ).run(stamp, stamp, source.id);
+}
+
+/** Screenshots found after their source's first scan, extracted on-device and not yet analyzed. */
+export function newWaitingCount(db: Db): number {
+  const row = db
+    .prepare(`
+      SELECT COUNT(*) AS n FROM screenshots s JOIN sources src ON src.id = s.source_id
+      WHERE s.status = 'extracted' AND s.ignored = 0 AND s.missing_since IS NULL
+        AND s.discovered_at > src.initial_scan_at
+    `)
+    .get() as { n: number };
+  return row.n;
 }
 
 /** Recursively finds image files under root, skipping hidden entries and bundles. */
@@ -177,7 +200,7 @@ export function reconcileFolder(db: Db, source: Source, files: DiscoveredFile[])
         result.missing++;
       }
     }
-    db.prepare("UPDATE sources SET last_scan_at = ? WHERE id = ?").run(stamp, source.id);
+    markScanned(db, source, stamp);
   });
 
   return result;
@@ -196,51 +219,56 @@ export function photoVersion(asset: PhotoAsset): string {
 /**
  * Brings the screenshots table in line with the Photos Screenshots album,
  * like reconcileFolder: new assets are queued, edited ones re-queued, and
- * assets gone from the album (deleted or hidden) marked missing.
+ * assets gone from the album (deleted or hidden) marked missing. Album
+ * membership is updated in place, since it never changes the image.
  */
 export function reconcilePhotos(db: Db, source: Source, assets: PhotoAsset[]): ReconcileResult {
   const result: ReconcileResult = { discovered: assets.length, added: 0, changed: 0, returned: 0, missing: 0 };
   const stamp = now();
 
   transaction(db, () => {
-    const known = new Map<string, { id: string; source_version: string | null; missing_since: string | null }>();
+    const known = new Map<string, KnownPhoto>();
     const rows = db
-      .prepare("SELECT id, source_key, source_version, missing_since FROM screenshots WHERE source_id = ?")
-      .all(source.id) as unknown as Array<{ id: string; source_key: string; source_version: string | null; missing_since: string | null }>;
+      .prepare("SELECT id, source_key, source_version, missing_since, albums, status FROM screenshots WHERE source_id = ?")
+      .all(source.id) as unknown as KnownPhoto[];
     for (const row of rows) known.set(row.source_key, row);
 
     // file_name is filled in by extraction; '' keeps the asset id out of names until then.
     const insert = db.prepare(`
       INSERT INTO screenshots
-        (id, source_id, source_key, photo_asset_id, file_name, file_mtime, source_version, width, height,
+        (id, source_id, source_key, photo_asset_id, file_name, file_mtime, source_version, albums, width, height,
          captured_at, captured_at_source, discovered_at, status)
-      VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'photos', ?, 'pending')
+      VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, 'photos', ?, 'pending')
     `);
     const requeue = db.prepare(`
       UPDATE screenshots
-      SET file_mtime = ?, source_version = ?, modified_at = ?, missing_since = NULL, status = 'pending', error = NULL
+      SET file_mtime = ?, source_version = ?, albums = ?, modified_at = ?, missing_since = NULL, status = 'pending',
+          error = NULL
       WHERE id = ?
     `);
-    const update = db.prepare("UPDATE screenshots SET file_mtime = ?, missing_since = NULL WHERE id = ?");
+    const update = db.prepare("UPDATE screenshots SET file_mtime = ?, albums = ?, missing_since = NULL WHERE id = ?");
     const markMissing = db.prepare("UPDATE screenshots SET missing_since = ? WHERE id = ?");
 
     const seen = new Set<string>();
     for (const asset of assets) {
       seen.add(asset.asset);
       const version = photoVersion(asset);
+      const albums = albumsJson(asset.albums);
       const row = known.get(asset.asset);
       if (!row) {
         insert.run(
-          randomUUID(), source.id, asset.asset, asset.asset, asset.modified, version, asset.width, asset.height,
+          randomUUID(), source.id, asset.asset, asset.asset, asset.modified, version, albums, asset.width, asset.height,
           asset.created ?? stamp, stamp,
         );
         result.added++;
       } else if (row.source_version !== version) {
-        requeue.run(asset.modified, version, stamp, row.id);
+        requeue.run(asset.modified, version, albums, stamp, row.id);
         result.changed++;
       } else {
-        update.run(asset.modified, row.id);
+        update.run(asset.modified, albums, row.id);
         if (row.missing_since) result.returned++;
+        // Album names are searchable, so the index row follows them.
+        if (row.albums !== albums && row.status !== "pending" && row.status !== "error") reindexScreenshot(db, row.id);
       }
     }
     for (const row of rows) {
@@ -249,8 +277,23 @@ export function reconcilePhotos(db: Db, source: Source, assets: PhotoAsset[]): R
         result.missing++;
       }
     }
-    db.prepare("UPDATE sources SET last_scan_at = ? WHERE id = ?").run(stamp, source.id);
+    markScanned(db, source, stamp);
   });
 
   return result;
+}
+
+interface KnownPhoto {
+  id: string;
+  source_key: string;
+  source_version: string | null;
+  missing_since: string | null;
+  albums: string | null;
+  status: string;
+}
+
+/** Album names as stored: a sorted JSON list, or null for none. */
+function albumsJson(albums: string[] | undefined): string | null {
+  const names = [...new Set((albums ?? []).map((name) => name.trim()).filter(Boolean))].sort();
+  return names.length ? JSON.stringify(names) : null;
 }

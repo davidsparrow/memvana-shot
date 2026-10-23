@@ -1,5 +1,6 @@
 // Command-line access to the same library the MCP server uses.
 // Bundled to mcp/dist/cli.mjs.
+import { setPriority } from "node:os";
 import { parseArgs } from "node:util";
 import { assertNodeVersion } from "../node-version.ts";
 
@@ -15,6 +16,7 @@ const USAGE = `usage: memvana-shot <command> [options]
   scan --photos [--limit N]      the same for the Photos library only
   photos connect [--limit N]     ask for Photos access (macOS prompts once), then scan Photos
   photos settings                open the Photos pane of System Settings if access is off
+  catch-up                       what each new Claude session runs quietly: rescan, extract new screenshots
   list [--status S] [--limit N]  recent screenshots (S: ${STATUSES.join("|")})
   get <id>                       one screenshot's full record
   search <query> [--also a,b] [--type T] [--after D] [--before D] [--limit N] [--mode M]
@@ -90,6 +92,13 @@ try {
       );
       process.stderr.write("\n");
       break;
+    case "catch-up": {
+      // Runs detached from a session-start hook: stay out of the way, and never run on.
+      setPriority(10);
+      setTimeout(() => process.exit(0), 10 * 60_000).unref();
+      print(await library.catchUp({ concurrency: 2 }));
+      break;
+    }
     case "photos":
       if (arg !== "connect" && arg !== "settings") throw new Error("usage: photos connect|settings");
       print(

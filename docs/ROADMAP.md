@@ -37,9 +37,10 @@ is deliberately not a general photo manager.
 
 ## V1.0: Public release
 
+- [x] Photos albums and descriptive folders as groups: searchable, used in related screenshots, and offered as tags (never applied without a yes)
+- [x] Silent catch-up when a Claude session starts: new screenshots are found and prepared on-device, and analyzed only after you agree
+- [x] Safe batching for large libraries (tested with 10,000 screenshots)
 - [ ] Guided first run ("Found 4,281 screenshots. Analyze recent 250?")
-- [ ] Safe batching for large libraries
-- [ ] Silent catch-up when a Claude session starts
 - [ ] Candidate clusters and repeated interests
 - [ ] Privacy explainer and install guide
 

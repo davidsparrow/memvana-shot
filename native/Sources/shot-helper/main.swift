@@ -17,7 +17,7 @@
 import Foundation
 import Vision
 
-let helperVersion = "0.3.0"
+let helperVersion = "0.4.0"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("shot-helper: \(message)\n".utf8))

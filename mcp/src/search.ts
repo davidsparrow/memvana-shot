@@ -1,4 +1,5 @@
 import type { Db } from "./db.ts";
+import { listGroups } from "./groups.ts";
 import { NAME_SQL } from "./names.ts";
 import { cosine } from "./semantic/vectors.ts";
 import { SEARCH_WEIGHTS } from "./search-index.ts";
@@ -169,6 +170,8 @@ function filterSql(options: SearchOptions): { where: string; params: Params } {
 
 interface Ranked {
   id: string;
+  /** The search index row, for keyword hits. */
+  rowid?: number;
   score?: number;
   match?: string;
 }
@@ -199,17 +202,18 @@ export async function searchScreenshots(
   const { where, params } = filterSql(options);
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const offset = Math.max(options.offset ?? 0, 0);
+  // CROSS JOIN keeps the full-text match as the outer loop. Left to itself,
+  // SQLite may walk every screenshot and rerun the match for each one.
   const keywordFrom = `
     FROM search_index
-    JOIN screenshots s ON s.search_rowid = search_index.rowid
+    CROSS JOIN screenshots s ON s.search_rowid = search_index.rowid
     ${JOINS}
     WHERE search_index MATCH :match AND ${where}
   `;
   const keywordRanked = (extra: string, p: Params) =>
     db
       .prepare(`
-        SELECT s.id, bm25(search_index, ${SEARCH_WEIGHTS.join(", ")}) AS score,
-               snippet(search_index, -1, '«', '»', '…', 12) AS match
+        SELECT s.id, search_index.rowid AS rowid, bm25(search_index, ${SEARCH_WEIGHTS.join(", ")}) AS score
         ${keywordFrom} ORDER BY score ${extra}
       `)
       .all({ ...params, match: match ?? null, ...p }) as unknown as Ranked[];
@@ -239,9 +243,9 @@ export async function searchScreenshots(
     const cutoff = Math.max(MEANING_FLOOR, (byMeaning[0]?.[1] ?? 0) - MEANING_SPREAD);
     const meaningful = byMeaning.filter(([, sim]) => sim >= cutoff).slice(0, CANDIDATES);
 
-    const fused = new Map<string, { score: number; match?: string; matched_by: Array<"keywords" | "meaning"> }>();
+    const fused = new Map<string, { score: number; rowid?: number; matched_by: Array<"keywords" | "meaning"> }>();
     keywords.forEach((hit, rank) => {
-      fused.set(hit.id, { score: 1 / (FUSION_K + rank + 1), match: hit.match, matched_by: ["keywords"] });
+      fused.set(hit.id, { score: 1 / (FUSION_K + rank + 1), rowid: hit.rowid, matched_by: ["keywords"] });
     });
     meaningful.forEach(([id], rank) => {
       const entry = fused.get(id) ?? { score: 0, matched_by: [] };
@@ -256,8 +260,8 @@ export async function searchScreenshots(
     total = ordered.length;
     ranked = ordered.slice(offset, offset + limit).map(([id, entry]) => ({
       id,
+      rowid: entry.rowid,
       score: Math.round((entry.score / best) * 100) / 100,
-      match: entry.match,
       similarity: similarity.has(id) ? Math.round(similarity.get(id)! * 100) / 100 : undefined,
       matched_by: entry.matched_by,
     }));
@@ -273,6 +277,20 @@ export async function searchScreenshots(
       .prepare(`SELECT s.id ${from} ORDER BY s.captured_at DESC LIMIT :limit OFFSET :offset`)
       .all({ ...params, limit, offset }) as unknown as Ranked[];
     total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(params) as { n: number }).n;
+  }
+
+  // Snippets cost far more than ranking, so make them only for the keyword hits returned.
+  const rowids = ranked.flatMap((hit) => (hit.rowid === undefined ? [] : [hit.rowid]));
+  if (match && rowids.length) {
+    const snippets = new Map(
+      (db
+        .prepare(`
+          SELECT rowid, snippet(search_index, -1, '«', '»', '…', 12) AS match FROM search_index
+          WHERE search_index MATCH ? AND rowid IN (${rowids.map(() => "?").join(", ")})
+        `)
+        .all(match, ...rowids) as Array<{ rowid: number; match: string }>).map((r) => [r.rowid, r.match]),
+    );
+    for (const hit of ranked) hit.match = hit.rowid === undefined ? undefined : snippets.get(hit.rowid);
   }
 
   const rows = new Map(
@@ -397,6 +415,8 @@ export function libraryStats(db: Db, options: StatsOptions = {}) {
        WHERE a.source_app IS NOT NULL GROUP BY lower(a.source_app) ORDER BY count DESC LIMIT :top`,
     ),
     tags: listTags(db).map(({ name, total, suggested }) => ({ name, count: total, suggested })),
+    // Albums and descriptive folders the user sorted screenshots into: candidates for tags.
+    groups: listGroups(db, range),
     sensitive: (
       db
         .prepare(base + "SELECT COUNT(*) AS n FROM base JOIN analyses a ON a.screenshot_id = base.id WHERE a.sensitive = 1")

@@ -10,7 +10,7 @@
 // Everything lives in /tmp/memvana-qa (MEMVANA_QA_DIR moves it). The real library is never
 // opened, and part 1 never connects Photos, opens windows or downloads the model.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -20,6 +20,7 @@ import { parseArgs } from "node:util";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(ROOT, "mcp", "dist", "cli.mjs");
 const APP = join(ROOT, "bin", "Memvana Shot.app");
+const SESSION_START = join(ROOT, "mcp", "dist", "session-start.mjs");
 const FIXTURES = join(ROOT, "mcp", "test", "fixtures", "library");
 const BASE = process.env.MEMVANA_QA_DIR || "/tmp/memvana-qa";
 const MODELS = join(BASE, "models"); // shared by both parts and kept by `clean`, so it downloads once
@@ -45,12 +46,13 @@ const MISDATED = [
 const USAGE = `usage: node scripts/qa.mjs <auto|guided|clean> [options]
 
   auto [--model M] [--dev]        part 1: automated Claude Code checks (default model: sonnet)
-  guided [--images DIR] [--model M] [--dev]
+  guided [--images DIR] [--keep] [--model M] [--dev]
                                   part 2: open Claude Code on a throwaway library, for docs/QA.md
   clean [--all]                   delete the QA libraries (--all: the downloaded model too)
 
   --dev     use local builds (native/.build) instead of the shipped bin/Memvana Shot.app
   --images  screenshots to copy into the guided test folder (default: the test fixtures)
+  --keep    reopen the guided library from last time instead of starting fresh
 `;
 
 const { positionals, values: opts } = parseArgs({
@@ -60,6 +62,7 @@ const { positionals, values: opts } = parseArgs({
     images: { type: "string" },
     dev: { type: "boolean" },
     all: { type: "boolean" },
+    keep: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -244,6 +247,8 @@ function libraryReader(home) {
   const get = (file) => cli("get", id(file));
   return {
     status: () => cli("status"),
+    extracted: () => cli("list", "--status", "extracted", "--limit", "100"),
+    stats: () => cli("stats"),
     search: (query) => cli("search", query),
     tags: () => cli("tags"),
     id,
@@ -252,7 +257,7 @@ function libraryReader(home) {
   };
 }
 
-function partOneCases(shots, lib) {
+function partOneCases(shots, home, lib) {
   return [
     {
       id: "A1",
@@ -345,6 +350,17 @@ function partOneCases(shots, lib) {
     },
     {
       id: "A7",
+      title: "Tag ideas start from the user's own folders, and nothing is created without a yes",
+      prompt: "What tags would you suggest for organizing these?",
+      verify: (t) => [
+        expect(lib.stats().groups.some((group) => group.kind === "folder" && group.name === "code"), "the code folder is a group"),
+        expect(/\bcode\b/i.test(t.text), "offers the code folder as a tag", true),
+        expect(!t.called("create_tags") && !t.called("tag_screenshots"), "created and applied no tags"),
+        expect(lib.tags().length === 0, "the library still has no tags"),
+      ],
+    },
+    {
+      id: "A8",
       title: "Creates the tag the user asks for and applies it",
       prompt: "Make a tag called Kitchen, for cooking and kitchen gear, and put the pour-over receipt in it.",
       verify: () => [
@@ -353,7 +369,7 @@ function partOneCases(shots, lib) {
       ],
     },
     {
-      id: "A8",
+      id: "A9",
       title: "Removing a tag records a rejection",
       prompt: "Actually, take the Kitchen tag off the receipt.",
       verify: () => [
@@ -362,7 +378,7 @@ function partOneCases(shots, lib) {
       ],
     },
     {
-      id: "A9",
+      id: "A10",
       title: "The user's note is saved and searchable",
       prompt: "Add a note to the receipt: ask about a refund.",
       verify: () => [
@@ -371,7 +387,7 @@ function partOneCases(shots, lib) {
       ],
     },
     {
-      id: "A10",
+      id: "A11",
       title: "Hiding a screenshot",
       prompt: "Hide the blank screenshot. I don't want it in results.",
       verify: () => [
@@ -380,7 +396,7 @@ function partOneCases(shots, lib) {
       ],
     },
     {
-      id: "A11",
+      id: "A12",
       title: "/memvana-shot:scan notices a deleted file and a Finder tag",
       setup: () => {
         rmSync(join(shots, PICKLEBALL));
@@ -404,7 +420,7 @@ function partOneCases(shots, lib) {
       },
     },
     {
-      id: "A12",
+      id: "A13",
       title: "/memvana-shot:tags",
       prompt: "/memvana-shot:tags",
       verify: (t) => [
@@ -413,7 +429,7 @@ function partOneCases(shots, lib) {
       ],
     },
     {
-      id: "A13",
+      id: "A14",
       title: "/memvana-shot:rebuild-index",
       prompt: "/memvana-shot:rebuild-index",
       verify: (t) => [
@@ -422,7 +438,7 @@ function partOneCases(shots, lib) {
       ],
     },
     {
-      id: "A14",
+      id: "A15",
       title: "/memvana-shot:status",
       prompt: "/memvana-shot:status",
       verify: (t) => [
@@ -430,7 +446,42 @@ function partOneCases(shots, lib) {
         expect(/missing/i.test(t.text), "mentions the missing screenshot", true),
       ],
     },
+    {
+      id: "A16",
+      title: "The session-start catch-up prepares a new screenshot, and Claude mentions it",
+      setup: async () => {
+        copyFileSync(join(shots, RECEIPT), join(shots, "receipt again.jpg"));
+        const startSession = () =>
+          spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", SESSION_START], {
+            env: { ...qaEnv(home), CLAUDE_PLUGIN_ROOT: ROOT },
+            encoding: "utf8",
+          });
+        const hook = startSession();
+        const prepared = () => lib.extracted().some((shot) => shot.file === "receipt again.jpg");
+        // A catch-up still running from an earlier turn makes this one stand down, so try again.
+        const found = (await waitFor(prepared, 30)) || (startSession(), await waitFor(prepared, 60));
+        return [
+          expect(hook.status === 0 && hook.stdout === "", "the hook exits at once, with nothing to say yet"),
+          expect(found, "the detached catch-up found and prepared the new screenshot"),
+          expect(lib.status().new_screenshots_waiting === 1, "it counts as new, and nothing was analyzed"),
+        ];
+      },
+      prompt: "Anything new in my screenshots since last time?",
+      verify: (t) => [
+        expect(/\b(1|one)\b[^.\n]*\bnew\b|\bnew\b[^.\n]*\b(1|one)\b/i.test(t.text), "tells the user about the 1 new screenshot"),
+        expect(!t.called("save_analyses"), "doesn't analyze it without a yes"),
+      ],
+    },
   ];
+}
+
+/** Waits up to `seconds` for `ready` to hold, checking every second. */
+async function waitFor(ready, seconds) {
+  for (let i = 0; i < seconds; i++) {
+    if (ready()) return true;
+    await new Promise((done) => setTimeout(done, 1000));
+  }
+  return ready();
 }
 
 async function auto() {
@@ -493,8 +544,8 @@ async function auto() {
   if (record(preflight)) fail("\nPreflight failed, so part 1 stopped before using Claude.");
 
   const replies = [];
-  for (const test of partOneCases(shots, lib)) {
-    test.setup?.();
+  for (const test of partOneCases(shots, run.home, lib)) {
+    const setupChecks = (await test.setup?.()) ?? [];
     const turnStarted = Date.now();
     const turn = await claudeTurn(run, test.prompt, test.minutes ?? 5);
     say();
@@ -503,6 +554,7 @@ async function auto() {
     let checks;
     try {
       checks = turn.error ? [expect(false, `Claude Code failed: ${turn.error.slice(0, 300)}`)] : test.verify(turn);
+      checks = [...setupChecks, ...checks];
     } catch (err) {
       checks = [expect(false, `the check itself failed: ${err.message}`)];
     }
@@ -532,18 +584,21 @@ async function auto() {
 
 async function guided() {
   const dir = join(BASE, "guided");
-  rmSync(dir, { recursive: true, force: true });
   const shots = join(dir, "Screenshots");
   const home = join(dir, "home");
   const cwd = join(dir, "cwd");
-  for (const path of [home, cwd, MODELS]) mkdirSync(path, { recursive: true });
-  copyScreenshots(opts.images ? resolve(opts.images) : FIXTURES, shots);
+  const reopen = opts.keep && existsSync(home);
+  if (!reopen) {
+    rmSync(dir, { recursive: true, force: true });
+    for (const path of [home, cwd, MODELS]) mkdirSync(path, { recursive: true });
+    copyScreenshots(opts.images ? resolve(opts.images) : FIXTURES, shots);
+  }
   const claude = findClaude();
 
   console.log(`Memvana Shot QA, part 2 (guided)
 
   Test folder   ${shots}
-  QA library    ${home}
+  QA library    ${home}${reopen ? " (reopened)" : ""}
                 (throwaway: your real library isn't used)
   Checklist     docs/QA.md, part 2. Start with G1.
 

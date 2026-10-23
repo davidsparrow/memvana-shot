@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { type Db, now, transaction } from "./db.ts";
-import { NAME_SQL, type NameHint, nameHint } from "./names.ts";
+import { NAME_SQL, type NameHint, nameHint, parseAlbums } from "./names.ts";
 import { reindexScreenshot } from "./search-index.ts";
 import { suggestTags, vocabulary } from "./tags.ts";
 
@@ -59,7 +59,8 @@ they care about and why they kept the image. Work its concepts into topics,
 entities and keywords, and into likely_reason_saved. For example,
 "magus__eddm_door-hanger-strip-magnets.png" points to EDDM direct-mail
 marketing, door hangers and magnets. A folder such as "Recipes/" or "Kitchen
-remodel/" is a deliberate grouping. Expand abbreviations you're confident
+remodel/" is a deliberate grouping, and so is a Photos album the user put the
+screenshot in (listed in albums). Expand abbreviations you're confident
 about (EDDM = Every Door Direct Mail) and keep the original term as a keyword
 too. Ignore auto-generated names ("Screenshot 2026-…", "IMG_2041").
 
@@ -138,6 +139,8 @@ export interface BatchItem extends NameHint {
   ocr_text: string;
   ocr_truncated: boolean;
   thumb_path: string | null;
+  /** The user's Photos albums holding it, if any. */
+  albums?: string[];
 }
 
 export function pendingAnalysisCount(db: Db): number {
@@ -176,7 +179,7 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
     const until = new Date(Date.now() + LEASE_MINUTES * 60_000).toISOString();
     const lease = db.prepare("UPDATE screenshots SET analysis_claimed_until = ? WHERE id = ?");
     const fetch = db.prepare(`
-      SELECT s.id, s.captured_at, ${NAME_SQL} AS name, s.width, s.height, s.source_device,
+      SELECT s.id, s.captured_at, ${NAME_SQL} AS name, s.width, s.height, s.source_device, s.albums,
              e.ocr_text, e.labels, e.thumb_path
       FROM screenshots s JOIN extractions e ON e.screenshot_id = s.id
       WHERE s.id = ?
@@ -187,6 +190,7 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
       if (!row) continue; // unknown or not yet extracted
       lease.run(until, id);
       const ocr: string = row.ocr_text ?? "";
+      const albums = parseAlbums(row.albums);
       items.push({
         id: row.id,
         captured_at: row.captured_at,
@@ -198,6 +202,7 @@ export function claimBatch(db: Db, options: { limit: number; ids?: string[] }): 
         ocr_text: ocr.slice(0, OCR_CHARS_FOR_ANALYSIS),
         ocr_truncated: ocr.length > OCR_CHARS_FOR_ANALYSIS,
         thumb_path: row.thumb_path,
+        ...(albums.length ? { albums } : {}),
       });
     }
     return items;

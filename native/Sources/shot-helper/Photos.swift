@@ -9,7 +9,8 @@
 //
 //   photos status       {"done": true, "authorization": "authorized"}
 //   photos authorize    asks macOS for access if it hasn't been asked yet, then reports the status
-//   photos list         one line per screenshot asset, then {"done": true, "count": N}
+//   photos list         one line per screenshot asset (with the user's albums holding it),
+//                       then {"done": true, "count": N}
 //   photos extract --thumb-dir DIR [--max-dim N] [--concurrency N]
 //       stdin:  {"id": "...", "asset": "<local identifier>"} per job
 //       stdout: the same result lines as `extract`, plus asset, filename and created
@@ -58,8 +59,11 @@ func runPhotos(_ arguments: [String]) {
     case "list":
         requireAccess()
         let assets = screenshotAssets()
+        let albums = userAlbums(holding: assets)
         assets.enumerateObjects { asset, _, _ in
-            JSONLines.shared.write(listing(asset))
+            var line = listing(asset)
+            if let names = albums[asset.localIdentifier] { line["albums"] = names }
+            JSONLines.shared.write(line)
         }
         JSONLines.shared.write(["done": true, "count": assets.count])
 
@@ -143,6 +147,42 @@ func screenshotAssets() -> PHFetchResult<PHAsset> {
         PHAssetMediaType.image.rawValue, PHAssetMediaSubtype.photoScreenshot.rawValue
     )
     return PHAsset.fetchAssets(with: options)
+}
+
+/// The user's own albums holding each screenshot, by asset: "Trips/Japan" for
+/// an album inside a folder. Shared albums are left out (they hold copies,
+/// which are never in the Screenshots album), and so are smart albums, which
+/// are rules rather than groupings.
+func userAlbums(holding screenshots: PHFetchResult<PHAsset>) -> [String: [String]] {
+    var wanted = Set<String>()
+    screenshots.enumerateObjects { asset, _, _ in wanted.insert(asset.localIdentifier) }
+    var byAsset: [String: [String]] = [:]
+    let images = PHFetchOptions()
+    images.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+    let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
+    albums.enumerateObjects { album, _, _ in
+        guard let title = album.localizedTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return }
+        let name = (folderPath(of: album) + [title]).joined(separator: "/")
+        PHAsset.fetchAssets(in: album, options: images).enumerateObjects { asset, _, _ in
+            if wanted.contains(asset.localIdentifier) { byAsset[asset.localIdentifier, default: []].append(name) }
+        }
+    }
+    return byAsset
+}
+
+/// The folders an album sits in, outermost first.
+private func folderPath(of collection: PHCollection) -> [String] {
+    var path: [String] = []
+    var current = collection
+    // Folders nest a few levels at most; the limit only guards against a cycle.
+    for _ in 0..<16 {
+        guard let folder = PHCollectionList.fetchCollectionListsContaining(current, options: nil).firstObject else { break }
+        if let title = folder.localizedTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            path.insert(title, at: 0)
+        }
+        current = folder
+    }
+    return path
 }
 
 private func listing(_ asset: PHAsset) -> [String: Any] {
