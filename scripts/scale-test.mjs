@@ -104,6 +104,7 @@ await time("search: with a date range and a tag", () =>
 let i = 0;
 await time("related screenshots (scores every candidate)", () => library.related(someIds[i++ % someIds.length]), { repeat: 10 });
 await time("library stats (including groups)", () => library.stats(), { repeat: 5 });
+await time("repeated interests", () => library.interests(), { repeat: 5 });
 await time("status", () => library.status(), { repeat: 5 });
 await time("list the newest 25", () => library.list(), { repeat: 5 });
 await time("tags with counts", () => library.listTags(), { repeat: 5 });

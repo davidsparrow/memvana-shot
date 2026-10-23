@@ -485,6 +485,68 @@ export function createServer(library: Library): McpServer {
   );
 
   server.registerTool(
+    "get_interests",
+    {
+      title: "Repeated interests",
+      description:
+        "Subjects the user keeps saving screenshots about, strongest first: \"11 screenshots about pickleball " +
+        "equipment over four months\". Each comes with its count, when it started and last came up, whether " +
+        "it's `recurring` (several days over weeks or months) or a `burst`, recurring sub-subjects (`facets`), " +
+        "examples, and any album or tag already covering it. Built from the analyzed screenshots' topics and " +
+        "named things (people and sensitive screenshots are left out), grouped by shared screenshots, so " +
+        "different wordings of one subject (\"facebook ads\", \"facebook advertising\") can come back " +
+        "separately: combine them when you talk about them. Use for the first-run overview and when the " +
+        "user asks what they keep coming back to. Read-only.",
+      inputSchema: {
+        after: z.string().optional().describe("YYYY, YYYY-MM, YYYY-MM-DD or ISO time."),
+        before: z.string().optional().describe("Exclusive upper bound, same formats."),
+        limit: z.number().int().min(1).max(25).optional().describe("Default 12."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ after, before, limit }) => {
+      try {
+        return json(library.interests({ after, before, limit }));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "tag_interest",
+    {
+      title: "Tag a repeated interest",
+      description:
+        "Records the user's answer when you offered a tag for a repeated interest from get_interests (or " +
+        "for several you presented as one, such as \"facebook ads\" and \"facebook advertising\"). With `tag`, " +
+        "creates the tag if needed and puts it on every screenshot of those interests as an accepted " +
+        "suggestion (screenshots where the user rejected that tag keep their rejection). With `declined: " +
+        "true`, remembers the no, so get_interests marks them `tag_declined` and you don't offer them again. " +
+        "Only after the user answers.",
+      inputSchema: {
+        keys: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(10)
+          .describe("The `key` of each interest from get_interests that the answer covers."),
+        tag: z.string().min(1).max(40).optional().describe("The tag name the user agreed to."),
+        description: z.string().max(200).optional().describe("One line on what belongs in the tag."),
+        declined: z.boolean().optional().describe("The user doesn't want a tag for it."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ keys, tag, description, declined }) => {
+      try {
+        if ((tag === undefined) === (declined !== true)) throw new Error("Give either `tag` or `declined: true`.");
+        return json(library.tagInterest(keys, tag !== undefined ? { tag, description } : { declined: true }));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "open_screenshot",
     {
       title: "Open original screenshot",

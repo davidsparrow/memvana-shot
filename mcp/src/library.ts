@@ -34,6 +34,7 @@ import {
 import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
 import { helperVersion, readFinderTags } from "./helper.ts";
 import { type GroupSelector, groupMembers } from "./groups.ts";
+import { type InterestDecision, type InterestOptions, findInterests, tagInterest } from "./interests.ts";
 import { NAME_SQL, parseAlbums } from "./names.ts";
 import { AppBridge, type PhotosAuthorization, type PhotosBridge, PhotosAccessError, hasAccess } from "./photos.ts";
 import { type RelatedResult, relatedScreenshots } from "./related.ts";
@@ -772,6 +773,17 @@ export class Library {
       throw new Error(`No screenshot with id ${id}`);
     }
     return relatedScreenshots(this.db, id, this.semantic.ready ? this.semantic.vectors() : undefined, options);
+  }
+
+  /** Subjects the user keeps saving screenshots about, strongest first. */
+  interests(options: InterestOptions = {}) {
+    return findInterests(this.db, options, this.semantic.ready ? this.semantic.vectors() : undefined);
+  }
+
+  /** The user's yes (a tag on the interests' screenshots) or no to tagging one or more interests. */
+  tagInterest(keys: string | string[], decision: InterestDecision) {
+    const list = Array.isArray(keys) ? keys : [keys];
+    return this.changed(tagInterest(this.db, list, decision, this.semantic.ready ? this.semantic.vectors() : undefined));
   }
 
   /** Starts the one-time semantic-search download (in the background) if needed, or records a no. */

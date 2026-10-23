@@ -36,6 +36,7 @@ describe("MCP server", () => {
       "edit_screenshot",
       "edit_tag",
       "get_analysis_batch",
+      "get_interests",
       "get_library_stats",
       "get_related_screenshots",
       "get_screenshot",
@@ -50,8 +51,18 @@ describe("MCP server", () => {
       "search_screenshots",
       "setup_semantic_search",
       "suggest_tags",
+      "tag_interest",
       "tag_screenshots",
     ]);
+  });
+
+  test("get_interests says when too few are analyzed; tag_interest needs a yes or a no", async () => {
+    const interests = JSON.parse(text(await client.callTool({ name: "get_interests", arguments: {} })));
+    assert.deepEqual(interests.interests, []);
+    assert.match(interests.note, /too few/);
+    const neither = await client.callTool({ name: "tag_interest", arguments: { keys: ["pickleball"] } });
+    assert.equal(neither.isError, true);
+    assert.match(text(neither), /Give either `tag` or `declined: true`/);
   });
 
   test("reports tool errors as isError results", async () => {

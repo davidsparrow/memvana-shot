@@ -24,6 +24,8 @@ const USAGE = `usage: memvana-shot <command> [options]
                                  M: ${SEARCH_MODES.join("|")} (auto adds meaning when set up)
   related <id> [--limit N]       screenshots related to one, and why
   stats [--after D] [--before D] what you've been screenshotting
+  interests [--after D] [--before D] [--limit N]
+                                 subjects you keep saving screenshots about
   open <id> [--reveal]           open the original (or reveal it in Finder); Photos opens a copy
 
   semantic                       semantic search status
@@ -179,6 +181,9 @@ try {
     }
     case "stats":
       print(library.stats({ after: values.after, before: values.before }));
+      break;
+    case "interests":
+      print(library.interests({ after: values.after, before: values.before, limit }));
       break;
     case "open":
       if (!arg) throw new Error("open needs an id");
