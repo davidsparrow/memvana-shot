@@ -18,10 +18,14 @@ Argument: "$ARGUMENTS"
   source (folders and Photos). If there are none, call `get_status` and offer
   Photos (when `photos.available`) and its `suggested_folders`. Never connect
   Photos or scan a folder the user hasn't agreed to.
-- If `remaining_pending` is above 0, scan again until it's 0 or you've done
-  four scans, then say how many are left. Screenshots in
-  `extracting_elsewhere` are already being extracted in the background; say
-  so instead of rescanning for them.
+- If `remaining_pending` is above 0 (lots of new screenshots at once), scan
+  again until it's 0 or you've done four scans, then say how many are left.
+  Screenshots in `extracting_elsewhere` are already being extracted in the
+  background; say so instead of rescanning for them.
+- A scan never prepares the `backlog` (older screenshots the user didn't
+  choose to analyze at setup). Don't prepare it here; if there is one, mention
+  it in a few words ("4,031 older screenshots aren't analyzed yet").
+  If the user wants more analyzed, follow the skill's "Analyzing a lot".
 
 Report the result in one or two lines: how many screenshots were found, new,
 changed, missing, and any Finder tags imported. If a source is `unavailable`,
