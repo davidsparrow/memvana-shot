@@ -21,8 +21,8 @@ import {
   resolveApp,
   resolveHelper,
 } from "./config.ts";
-import { type Db, getMeta, openDb, schemaVersion, transaction } from "./db.ts";
-import { type ExtractSummary, absoluteThumbPath, extractPending, pendingCount } from "./extract.ts";
+import { type Db, getMeta, now, openDb, schemaVersion, setMeta, transaction } from "./db.ts";
+import { type ExtractSummary, absoluteThumbPath, claimedCount, extractPending, pendingCount } from "./extract.ts";
 import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
 import { helperVersion, readFinderTags } from "./helper.ts";
 import { type GroupSelector, groupMembers } from "./groups.ts";
@@ -56,6 +56,7 @@ import {
   ensurePhotosSource,
   listSources,
   photosSource,
+  newWaitingCount,
   reconcileFolder,
   reconcilePhotos,
 } from "./scanner.ts";
@@ -79,6 +80,8 @@ export interface ScanSummary {
   /** Tags picked up from (or removed in) Finder. */
   finder_tags?: { added: number; removed: number };
   remaining_pending: number;
+  /** Pending screenshots another Memvana Shot process (such as the session-start catch-up) is extracting. */
+  extracting_elsewhere?: number;
   next?: string;
 }
 
@@ -298,6 +301,8 @@ export class Library {
     this.semantic.schedule();
     const semantic = this.semantic.status();
     const photos = await this.photosStatus();
+    const catchUp = this.lastCatchUp();
+    const newWaiting = newWaitingCount(this.db);
     return {
       library: {
         home: this.config.home,
@@ -309,8 +314,16 @@ export class Library {
       counts: Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v ?? 0])),
       photos,
       semantic_search: semantic,
+      // The quiet scan a new Claude session starts in the background (new screenshots only).
+      catch_up: catchUp && {
+        started_at: catchUp.started_at,
+        finished_at: catchUp.finished_at ?? null,
+        found: catchUp.sources.reduce((n, source) => n + source.added, 0),
+        extracted: catchUp.extracted,
+      },
+      new_screenshots_waiting: newWaiting,
       suggested_folders: sources.length === 0 ? await this.suggestedFolders() : undefined,
-      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic, photos),
+      next_steps: nextSteps(sources.length, counts, helperInfo.available === true, this.taggingState(), semantic, photos, newWaiting),
     };
   }
 
@@ -341,27 +354,7 @@ export class Library {
       }
     }
 
-    const sources: ScanSummary["sources"] = [];
-    for (const source of targets) {
-      if (source.kind === "photos") {
-        sources.push(await this.scanPhotos(source));
-        continue;
-      }
-      // An unplugged drive or renamed folder shouldn't mark its whole library missing.
-      if (!existsSync(source.location)) {
-        sources.push({
-          kind: "folder",
-          location: source.location,
-          unavailable: true,
-          reason: "folder not found",
-          ...NOTHING_FOUND,
-        });
-        continue;
-      }
-      const files = await discoverFolder(source.location);
-      sources.push({ kind: "folder", location: source.location, ...reconcileFolder(this.db, source, files) });
-    }
-
+    const sources = await this.reconcile(targets);
     const limit = options.extractLimit ?? 250;
     let extraction: ScanSummary["extraction"];
     const helper = this.helperPath();
@@ -384,13 +377,94 @@ export class Library {
 
     this.semantic.schedule();
     const remaining = pendingCount(this.db);
+    const elsewhere = claimedCount(this.db);
+    let next: string | undefined;
+    if (remaining > elsewhere) next = `${remaining - elsewhere} screenshots still need local extraction; scan again to continue.`;
+    else if (elsewhere > 0) next = `${elsewhere} screenshots are being extracted in the background and will be ready shortly.`;
     return {
       sources,
       extraction,
       finder_tags: finderTags,
       remaining_pending: remaining,
-      next: remaining > 0 ? `${remaining} screenshots still need local extraction; scan again to continue.` : undefined,
+      extracting_elsewhere: elsewhere || undefined,
+      next,
     };
+  }
+
+  /** Brings the library in line with each source: what's new, changed, gone or back. */
+  private async reconcile(targets: Source[]): Promise<ScanSummary["sources"]> {
+    const sources: ScanSummary["sources"] = [];
+    for (const source of targets) {
+      if (source.kind === "photos") {
+        sources.push(await this.scanPhotos(source));
+        continue;
+      }
+      // An unplugged drive or renamed folder shouldn't mark its whole library missing.
+      if (!existsSync(source.location)) {
+        sources.push({
+          kind: "folder",
+          location: source.location,
+          unavailable: true,
+          reason: "folder not found",
+          ...NOTHING_FOUND,
+        });
+        continue;
+      }
+      const files = await discoverFolder(source.location);
+      sources.push({ kind: "folder", location: source.location, ...reconcileFolder(this.db, source, files) });
+    }
+    return sources;
+  }
+
+  /**
+   * The quiet catch-up a new Claude session starts in the background: rescans
+   * every source and extracts new screenshots on-device. It never touches the
+   * backlog the user left unprocessed at setup, never analyzes, and never asks
+   * for Photos access (without access, Photos is skipped).
+   */
+  async catchUp(options: { limit?: number; budgetMs?: number; concurrency?: number } = {}): Promise<CatchUpResult> {
+    const started = now();
+    const previous = transaction(this.db, () => {
+      const last = this.lastCatchUp();
+      const running = last && !last.finished_at && Date.now() - Date.parse(last.started_at) < CATCH_UP_STALE_MS;
+      if (!running) setMeta(this.db, "catch_up", JSON.stringify({ started_at: started }));
+      return running ? last : undefined;
+    });
+    if (previous) return { ...previous, skipped: "another catch-up is running" };
+
+    const result: CatchUpResult = { started_at: started, sources: [], extracted: 0, new_waiting: 0 };
+    try {
+      const targets = listSources(this.db);
+      result.sources = await this.reconcile(targets);
+      const helper = this.helperPath();
+      if (helper) {
+        const photosOff = result.sources.some((s) => s.kind === "photos" && s.unavailable);
+        const extraction = await extractPending(
+          this.db,
+          this.config,
+          { helper, photos: photosOff ? undefined : this.photos },
+          {
+            limit: options.limit ?? 250,
+            onlyNew: true,
+            concurrency: options.concurrency,
+            deadline: Date.now() + (options.budgetMs ?? 3 * 60_000),
+          },
+        );
+        result.extracted = extraction.succeeded;
+        await this.syncFinderTags(targets.filter((t) => existsSync(t.location)));
+      }
+    } finally {
+      result.finished_at = now();
+      result.new_waiting = newWaitingCount(this.db);
+      setMeta(this.db, "catch_up", JSON.stringify(result));
+    }
+    return result;
+  }
+
+  /** What the last session-start catch-up did, if one has run. */
+  lastCatchUp(): CatchUpResult | undefined {
+    const value = getMeta(this.db, "catch_up");
+    return value ? (JSON.parse(value) as CatchUpResult) : undefined;
   }
 
   /** Brings the library in line with the Photos Screenshots album. Access being off isn't an error here. */
@@ -733,6 +807,21 @@ function clearOldExports(dir: string): void {
 
 const NOTHING_FOUND: ReconcileResult = { discovered: 0, added: 0, changed: 0, returned: 0, missing: 0 };
 
+/** A catch-up that started this long ago without finishing has died; another may run. */
+const CATCH_UP_STALE_MS = 15 * 60_000;
+
+export interface CatchUpResult {
+  started_at: string;
+  finished_at?: string;
+  sources: ScanSummary["sources"];
+  /** Screenshots extracted on-device by this run. */
+  extracted: number;
+  /** New screenshots (found after setup) extracted and waiting for analysis. */
+  new_waiting: number;
+  skipped?: string;
+}
+
+
 function nextSteps(
   sourceCount: number,
   counts: Record<string, number | null>,
@@ -740,6 +829,7 @@ function nextSteps(
   tagging: { tags: number; untagged: number },
   semantic: SemanticStatus,
   photos: PhotosStatus,
+  newWaiting: number,
 ): string[] {
   const steps: string[] = [];
   if (!helperReady) steps.push("The native helper is missing (see helper.fix), so screenshots can't be extracted.");
@@ -756,7 +846,8 @@ function nextSteps(
   if (photos.connected && photos.fix) steps.push(`Photos is connected but unavailable: ${photos.fix}`);
   if (counts.pending) steps.push(`${counts.pending} screenshots await local extraction: call scan_screenshots.`);
   if (counts.extracted) {
-    steps.push(`${counts.extracted} screenshots await analysis: get_analysis_batch, then save_analyses.`);
+    const fresh = newWaiting ? ` (${newWaiting} of them new since setup; mention them, and analyze only after a yes)` : "";
+    steps.push(`${counts.extracted} screenshots await analysis${fresh}: get_analysis_batch, then save_analyses.`);
   }
   if (counts.analyzed && tagging.tags === 0) {
     steps.push("No tags yet. Propose 6-12 starter tags from get_library_stats and create them once the user agrees.");

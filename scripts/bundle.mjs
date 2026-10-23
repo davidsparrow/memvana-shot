@@ -10,7 +10,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const result = await build({
-  entryPoints: { server: "mcp/src/bin/server.ts", cli: "mcp/src/bin/cli.ts", embedder: "mcp/src/bin/embedder.ts" },
+  entryPoints: {
+    server: "mcp/src/bin/server.ts",
+    cli: "mcp/src/bin/cli.ts",
+    embedder: "mcp/src/bin/embedder.ts",
+    "session-start": "mcp/src/bin/session-start.ts",
+  },
   outdir: "mcp/dist",
   outExtension: { ".js": ".mjs" },
   bundle: true,

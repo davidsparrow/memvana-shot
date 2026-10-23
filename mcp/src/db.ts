@@ -101,6 +101,13 @@ export function getMeta(db: Db, key: string): string | undefined {
   return row?.value;
 }
 
+export function setMeta(db: Db, key: string, value: string): void {
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(
+    key,
+    value,
+  );
+}
+
 export function now(): string {
   return new Date().toISOString();
 }

@@ -29,6 +29,10 @@ export interface ExtractRunOptions {
   limit: number;
   maxDim?: number;
   concurrency?: number;
+  /** Only screenshots found after their source's first scan, or re-queued after a change (not the backlog). */
+  onlyNew?: boolean;
+  /** Start no new chunk after this time (ms since the epoch). */
+  deadline?: number;
   onProgress?: (done: number, total: number) => void;
 }
 
@@ -39,13 +43,47 @@ interface PendingRow {
   content_hash: string | null;
 }
 
+// Pending screenshots are claimed a chunk at a time, so several processes can
+// extract side by side without ever taking the same ones.
+const CHUNK = 50;
+
+const PENDING = "s.status = 'pending' AND s.ignored = 0 AND s.missing_since IS NULL";
+
 export function pendingCount(db: Db): number {
-  const row = db
-    .prepare(
-      "SELECT COUNT(*) AS n FROM screenshots WHERE status = 'pending' AND ignored = 0 AND missing_since IS NULL",
-    )
-    .get() as { n: number };
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM screenshots s WHERE ${PENDING}`).get() as { n: number };
   return row.n;
+}
+
+/** Pending screenshots another process is extracting right now. */
+export function claimedCount(db: Db): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM screenshots s WHERE ${PENDING} AND s.extract_claimed_until > ?`)
+    .get(now()) as { n: number };
+  return row.n;
+}
+
+/** Claims up to `limit` unclaimed pending screenshots, newest first. */
+function claimPending(db: Db, limit: number, options: { photos: boolean; onlyNew?: boolean }): { rows: PendingRow[]; until: string } {
+  return transaction(db, () => {
+    const stamp = now();
+    const kinds = options.photos ? "s.file_path IS NOT NULL OR s.photo_asset_id IS NOT NULL" : "s.file_path IS NOT NULL";
+    const fresh = options.onlyNew ? "AND (s.discovered_at > src.initial_scan_at OR s.content_hash IS NOT NULL)" : "";
+    const rows = db
+      .prepare(`
+        SELECT s.id, s.file_path, s.photo_asset_id, s.content_hash
+        FROM screenshots s JOIN sources src ON src.id = s.source_id
+        WHERE ${PENDING} AND (${kinds}) ${fresh}
+          AND (s.extract_claimed_until IS NULL OR s.extract_claimed_until < ?)
+        ORDER BY s.captured_at DESC
+        LIMIT ?
+      `)
+      .all(stamp, limit) as unknown as PendingRow[];
+    // Long enough for the slowest case: Photos downloading every image from iCloud.
+    const until = new Date(Date.now() + 2 * 60_000 + rows.length * 15_000).toISOString();
+    const claim = db.prepare("UPDATE screenshots SET extract_claimed_until = ? WHERE id = ?");
+    for (const row of rows) claim.run(until, row.id);
+    return { rows, until };
+  });
 }
 
 /**
@@ -61,55 +99,59 @@ export async function extractPending(
 ): Promise<ExtractSummary> {
   const started = Date.now();
   const summary: ExtractSummary = { processed: 0, succeeded: 0, failed: 0, relinked: 0, elapsed_ms: 0, errors: [] };
-  const kinds = extractors.photos ? "file_path IS NOT NULL OR photo_asset_id IS NOT NULL" : "file_path IS NOT NULL";
-  const rows = db
-    .prepare(`
-      SELECT id, file_path, photo_asset_id, content_hash FROM screenshots
-      WHERE status = 'pending' AND ignored = 0 AND missing_since IS NULL AND (${kinds})
-      ORDER BY captured_at DESC
-      LIMIT ?
-    `)
-    .all(options.limit) as unknown as PendingRow[];
-  if (rows.length === 0) return summary;
-
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const version = await helperVersion(extractors.helper);
-  const engine = `shot-helper/${version.version} ocr-r${version.ocrRevision} fp-r${version.featurePrintRevision}`;
+  let photos = extractors.photos;
+  let engine: string | undefined;
   const extractOptions = { thumbDir: thumbsDir(config), maxDim: options.maxDim, concurrency: options.concurrency };
+  const total = Math.min(options.limit, pendingCount(db));
 
-  const onResult = (result: ExtractResult | PhotoExtractResult) => {
-    const row = result.id ? byId.get(result.id) : undefined;
-    if (!row) return;
-    summary.processed++;
-    if (result.ok) {
-      const relinked = persistExtraction(db, config, row, result, engine);
-      summary.succeeded++;
-      if (relinked) summary.relinked++;
-    } else {
-      db.prepare("UPDATE screenshots SET status = 'error', error = ? WHERE id = ?").run(result.error, row.id);
-      summary.failed++;
-      if (summary.errors.length < 5) {
-        summary.errors.push({ id: row.id, file: row.file_path ? basename(row.file_path) : "Photos", error: result.error });
-      }
+  for (let left = options.limit; left > 0; ) {
+    if (options.deadline && Date.now() > options.deadline) break;
+    const { rows, until } = claimPending(db, Math.min(CHUNK, left), { photos: photos !== undefined, onlyNew: options.onlyNew });
+    if (rows.length === 0) break;
+    left -= rows.length;
+    if (!engine) {
+      const version = await helperVersion(extractors.helper);
+      engine = `shot-helper/${version.version} ocr-r${version.ocrRevision} fp-r${version.featurePrintRevision}`;
     }
-    options.onProgress?.(summary.processed, rows.length);
-  };
 
-  const files = rows.filter((r) => r.file_path !== null);
-  if (files.length > 0) {
-    await runExtract(extractors.helper, files.map((r) => ({ id: r.id, path: r.file_path! })), extractOptions, onResult);
-  }
-  const assets = rows.filter((r) => r.file_path === null && r.photo_asset_id !== null);
-  if (assets.length > 0 && extractors.photos) {
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const onResult = (result: ExtractResult | PhotoExtractResult) => {
+      const row = result.id ? byId.get(result.id) : undefined;
+      if (!row) return;
+      summary.processed++;
+      if (result.ok) {
+        const relinked = persistExtraction(db, config, row, result, engine!);
+        summary.succeeded++;
+        if (relinked) summary.relinked++;
+      } else {
+        db.prepare("UPDATE screenshots SET status = 'error', error = ? WHERE id = ?").run(result.error, row.id);
+        summary.failed++;
+        if (summary.errors.length < 5) {
+          summary.errors.push({ id: row.id, file: row.file_path ? basename(row.file_path) : "Photos", error: result.error });
+        }
+      }
+      options.onProgress?.(summary.processed, total);
+    };
+
     try {
-      await extractors.photos.extract(
-        assets.map((r) => ({ id: r.id, asset: r.photo_asset_id! })),
-        extractOptions,
-        onResult,
-      );
-    } catch (err) {
-      if (!(err instanceof PhotosAccessError)) throw err;
-      summary.photos_unavailable = `Photos access is off (${err.authorization}), so screenshots from Photos weren't extracted.`;
+      const files = rows.filter((r) => r.file_path !== null);
+      if (files.length > 0) {
+        await runExtract(extractors.helper, files.map((r) => ({ id: r.id, path: r.file_path! })), extractOptions, onResult);
+      }
+      const assets = rows.filter((r) => r.file_path === null && r.photo_asset_id !== null);
+      if (assets.length > 0 && photos) {
+        try {
+          await photos.extract(assets.map((r) => ({ id: r.id, asset: r.photo_asset_id! })), extractOptions, onResult);
+        } catch (err) {
+          if (!(err instanceof PhotosAccessError)) throw err;
+          summary.photos_unavailable = `Photos access is off (${err.authorization}), so screenshots from Photos weren't extracted.`;
+          photos = undefined;
+        }
+      }
+    } finally {
+      // Whatever wasn't extracted (a crash, Photos access off) is free for the next run.
+      const release = db.prepare("UPDATE screenshots SET extract_claimed_until = NULL WHERE id = ? AND extract_claimed_until = ?");
+      for (const row of rows) release.run(row.id, until);
     }
   }
 
