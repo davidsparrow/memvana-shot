@@ -25,7 +25,8 @@ import { type Db, getMeta, openDb, schemaVersion, transaction } from "./db.ts";
 import { type ExtractSummary, absoluteThumbPath, extractPending, pendingCount } from "./extract.ts";
 import { type EditInput, type UserEdits, editScreenshot, userEdits } from "./edits.ts";
 import { helperVersion, readFinderTags } from "./helper.ts";
-import { NAME_SQL } from "./names.ts";
+import { type GroupSelector, groupMembers } from "./groups.ts";
+import { NAME_SQL, parseAlbums } from "./names.ts";
 import { AppBridge, type PhotosAuthorization, type PhotosBridge, PhotosAccessError, hasAccess } from "./photos.ts";
 import { type RelatedResult, relatedScreenshots } from "./related.ts";
 import { type SearchOptions, type SearchResult, type StatsOptions, libraryStats, searchScreenshots } from "./search.ts";
@@ -108,6 +109,8 @@ export interface ScreenshotDetail {
   file_name: string;
   file_path: string | null;
   photo_asset_id: string | null;
+  /** The user's Photos albums holding it. */
+  albums: string[];
   captured_at: string | null;
   captured_at_source: string | null;
   source_device: string | null;
@@ -517,6 +520,7 @@ export class Library {
       file_name: row.file_name ?? basename(row.source_key),
       file_path: row.file_path,
       photo_asset_id: row.photo_asset_id,
+      albums: parseAlbums(row.albums),
       captured_at: row.captured_at,
       captured_at_source: row.captured_at_source,
       source_device: row.source_device,
@@ -592,7 +596,12 @@ export class Library {
     return this.changed(editTag(this.db, name, edit));
   }
 
-  tagScreenshots(ids: string[], change: { add?: string[]; remove?: string[] }) {
+  /** The user's tagging decision, for given screenshots or every screenshot in an album or folder. */
+  tagScreenshots(target: string[] | GroupSelector, change: { add?: string[]; remove?: string[] }) {
+    const ids = Array.isArray(target) ? target : groupMembers(this.db, target);
+    if (!Array.isArray(target) && ids.length === 0) {
+      throw new Error("album" in target ? `No screenshots in the album "${target.album}".` : `No screenshots in the folder "${target.folder}".`);
+    }
     return this.changed(tagScreenshots(this.db, ids, change));
   }
 

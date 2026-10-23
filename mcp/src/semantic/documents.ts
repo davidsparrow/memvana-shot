@@ -5,6 +5,7 @@
 
 import { createHash } from "node:crypto";
 import type { Db } from "../db.ts";
+import { parseAlbums } from "../names.ts";
 
 /** Bump when the document text below changes; every screenshot is then re-embedded. */
 export const DOCUMENT_VERSION = 1;
@@ -31,6 +32,8 @@ interface IndexRow {
   body: string;
   ocr: string;
   filename: string;
+  /** The JSON list of Photos album names, from screenshots. */
+  albums: string | null;
 }
 
 /** Screenshots that can be searched: extracted, present and not hidden. */
@@ -41,7 +44,7 @@ export function embeddingDocuments(db: Db, model: string, ids?: string[]): Embed
   const rows = db
     .prepare(`
       SELECT s.id, si.title, si.reason, si.tags, si.notes, si.topics, si.keywords, si.entities, si.body,
-             si.ocr, si.filename
+             si.ocr, si.filename, s.albums
       FROM screenshots s JOIN search_index si ON si.rowid = s.search_rowid
       WHERE ${ELIGIBLE} ${only}
       ORDER BY s.captured_at DESC
@@ -65,6 +68,7 @@ function list(value: string): string {
 
 function documentText(row: IndexRow): { title: string | null; text: string } {
   const ocr = row.ocr.replace(/\s+/g, " ").trim();
+  const albums = parseAlbums(row.albums).join(", ");
   const lines = [
     row.reason,
     row.body,
@@ -74,6 +78,7 @@ function documentText(row: IndexRow): { title: string | null; text: string } {
     list(row.keywords) && `Keywords: ${list(row.keywords)}`,
     list(row.entities) && `Names: ${list(row.entities)}`,
     row.filename && `File name: ${row.filename}`,
+    albums && `Photos albums: ${albums}`,
     ocr && `Text in image: ${ocr.length > OCR_CHARS ? ocr.slice(0, OCR_CHARS) + "…" : ocr}`,
   ];
   return {

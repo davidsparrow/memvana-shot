@@ -1,4 +1,5 @@
 import type { Db } from "./db.ts";
+import { listGroups } from "./groups.ts";
 import { NAME_SQL } from "./names.ts";
 import { cosine } from "./semantic/vectors.ts";
 import { SEARCH_WEIGHTS } from "./search-index.ts";
@@ -397,6 +398,8 @@ export function libraryStats(db: Db, options: StatsOptions = {}) {
        WHERE a.source_app IS NOT NULL GROUP BY lower(a.source_app) ORDER BY count DESC LIMIT :top`,
     ),
     tags: listTags(db).map(({ name, total, suggested }) => ({ name, count: total, suggested })),
+    // Albums and descriptive folders the user sorted screenshots into: candidates for tags.
+    groups: listGroups(db, range),
     sensitive: (
       db
         .prepare(base + "SELECT COUNT(*) AS n FROM base JOIN analyses a ON a.screenshot_id = base.id WHERE a.sensitive = 1")

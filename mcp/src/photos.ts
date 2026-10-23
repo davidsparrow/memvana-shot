@@ -28,6 +28,8 @@ export interface PhotoAsset {
   /** Edited in Photos; extraction uses the edited version. */
   edited: boolean;
   favorite: boolean;
+  /** The user's own albums holding it ("Trips/Japan" for an album in a folder). */
+  albums?: string[];
 }
 
 export interface AssetJob {

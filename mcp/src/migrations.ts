@@ -190,4 +190,23 @@ export const migrations: Migration[] = [
       ALTER TABLE screenshots ADD COLUMN source_version TEXT;
     `,
   },
+  {
+    version: 7,
+    sql: `
+      -- The user's own Photos albums holding each screenshot, as a JSON list of
+      -- names ("Trips/Japan" for an album in a folder). Updated on every scan,
+      -- without re-extracting.
+      ALTER TABLE screenshots ADD COLUMN albums TEXT;
+
+      -- Pending screenshots are claimed while being extracted, so two
+      -- processes (a session-start catch-up and the MCP server) never extract
+      -- the same ones.
+      ALTER TABLE screenshots ADD COLUMN extract_claimed_until TEXT;
+
+      -- When each source was first scanned. Screenshots discovered later are
+      -- new; earlier ones are the backlog the user chose how much of to process.
+      ALTER TABLE sources ADD COLUMN initial_scan_at TEXT;
+      UPDATE sources SET initial_scan_at = COALESCE(last_scan_at, created_at);
+    `,
+  },
 ];

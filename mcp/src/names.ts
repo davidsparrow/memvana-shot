@@ -39,14 +39,32 @@ export function isAutoName(sourceKey: string): boolean {
  * "Ideas/PickleballWall_v2 (1).png" → "ideas pickleball wall v2".
  */
 export function nameTerms(sourceKey: string): string {
-  const withoutExt = sourceKey.slice(0, sourceKey.length - extname(sourceKey).length);
-  const words = withoutExt
+  return [...new Set(meaningfulWords(sourceKey.slice(0, sourceKey.length - extname(sourceKey).length)))].join(" ");
+}
+
+/** The album names stored in screenshots.albums (a JSON list), or none. */
+export function parseAlbums(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const albums = JSON.parse(json);
+    return Array.isArray(albums) ? albums.filter((a): a is string => typeof a === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Meaningful words from a screenshot's album names: "Trips/Japan 2024" → "trips japan". */
+export function albumTerms(json: string | null | undefined): string {
+  return [...new Set(parseAlbums(json).flatMap(meaningfulWords))].join(" ");
+}
+
+function meaningfulWords(text: string): string[] {
+  return text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((w) => w.length > 1 && !/^\d+$/.test(w) && !NOISE.has(w));
-  return [...new Set(words)].join(" ");
 }
 
 export interface NameHint {

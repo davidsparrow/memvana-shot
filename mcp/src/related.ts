@@ -2,11 +2,11 @@
 // says which ones connected each pair:
 //   meaning   the semantic vectors are close (when semantic search is set up)
 //   looks     Apple Vision feature prints are close (same layout, same object, a re-capture)
-//   tags, names, topics in common; captured minutes apart; the same descriptive folder.
+//   tags, names, topics in common; captured minutes apart; the same descriptive folder or album.
 
 import { dirname } from "node:path";
 import type { Db } from "./db.ts";
-import { NAME_SQL, nameTerms } from "./names.ts";
+import { NAME_SQL, nameTerms, parseAlbums } from "./names.ts";
 import { cosine, toVector } from "./semantic/vectors.ts";
 
 // Calibrated on screenshot libraries. Meaning: unrelated pairs average about
@@ -55,6 +55,7 @@ interface Candidate {
   content_type: string | null;
   entities: string | null;
   topics: string | null;
+  albums: string | null;
 }
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
@@ -70,7 +71,7 @@ export function relatedScreenshots(
     SELECT s.id, s.captured_at, ${NAME_SQL} AS name, s.content_hash, e.feature_print, e.feature_print_revision,
            COALESCE(u.short_description, a.short_description) AS short_description,
            COALESCE(u.likely_reason_saved, a.likely_reason_saved) AS likely_reason_saved,
-           a.content_type, a.entities, a.topics
+           a.content_type, a.entities, a.topics, s.albums
     FROM screenshots s
     JOIN extractions e ON e.screenshot_id = s.id
     LEFT JOIN analyses a ON a.screenshot_id = s.id
@@ -90,6 +91,7 @@ export function relatedScreenshots(
   const targetTags = tags.get(id) ?? [];
   const targetNames = new Map(entityNames(target.entities).map((n) => [n.toLowerCase(), n]));
   const targetTopics = new Set(parseList(target.topics));
+  const targetAlbums = new Set(parseAlbums(target.albums));
 
   const hits: RelatedHit[] = [];
   for (const c of candidates) {
@@ -156,6 +158,13 @@ export function relatedScreenshots(
     if (targetFolder && descriptiveFolder(c.name) === targetFolder) {
       score += 0.2;
       reasons.push([0.2, `same folder (${targetFolder})`]);
+    }
+
+    // An album is always the user's own choice, so sharing one is enough to count as related.
+    const albums = targetAlbums.size ? parseAlbums(c.albums).filter((a) => targetAlbums.has(a)) : [];
+    if (albums.length) {
+      score += MIN_SCORE;
+      reasons.push([MIN_SCORE, `same album (${albums.slice(0, 2).join(", ")})`]);
     }
 
     if (score < MIN_SCORE && !nearDuplicate) continue;

@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { type Db, now, transaction } from "./db.ts";
-import { NAME_SQL } from "./names.ts";
+import { NAME_SQL, parseAlbums } from "./names.ts";
 import { reindexScreenshot, reindexTagged } from "./search-index.ts";
 
 export type TagState = "suggested" | "confirmed" | "added" | "rejected";
@@ -326,6 +326,8 @@ export interface TaggingItem {
   id: string;
   file_name: string;
   folder: string | null;
+  /** The user's Photos albums holding it. */
+  albums: string[];
   short_description: string;
   likely_reason_saved: string;
   content_type: string;
@@ -341,7 +343,7 @@ export function taggingBatch(db: Db, limit: number): { items: TaggingItem[]; rem
   `;
   const rows = db
     .prepare(`
-      SELECT s.id, ${NAME_SQL} AS name, COALESCE(u.short_description, a.short_description) AS short_description,
+      SELECT s.id, ${NAME_SQL} AS name, s.albums, COALESCE(u.short_description, a.short_description) AS short_description,
              COALESCE(u.likely_reason_saved, a.likely_reason_saved) AS likely_reason_saved,
              a.content_type, a.topics
       FROM screenshots s JOIN analyses a ON a.screenshot_id = s.id
@@ -357,6 +359,7 @@ export function taggingBatch(db: Db, limit: number): { items: TaggingItem[]; rem
       id: r.id,
       file_name: slash >= 0 ? r.name.slice(slash + 1) : r.name,
       folder: slash >= 0 ? r.name.slice(0, slash) : null,
+      albums: parseAlbums(r.albums),
       short_description: r.short_description,
       likely_reason_saved: r.likely_reason_saved,
       content_type: r.content_type,
