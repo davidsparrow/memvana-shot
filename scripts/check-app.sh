@@ -22,5 +22,17 @@ archs="$(lipo -archs "$APP/Contents/MacOS/shot-helper")"
 codesign --verify --strict "$APP" || fail "The shipped app's signature is invalid."
 signature="$(codesign -dv "$APP" 2>&1)"
 grep -qx "TeamIdentifier=$TEAM_ID" <<< "$signature" || fail "The shipped app isn't signed by team $TEAM_ID."
-xcrun stapler validate -q "$APP" || fail "The shipped app has no stapled notarization ticket."
+# stapler validate asks Apple's servers, which CI runners can't always reach,
+# so retry it, then fall back to Gatekeeper, which reads the stapled ticket
+# (Contents/CodeResources) without the network.
+notarized() {
+  for attempt in 1 2 3; do
+    xcrun stapler validate -q "$APP" && return 0
+    sleep $((attempt * 5))
+  done
+  echo "stapler couldn't validate online; checking the stapled ticket with Gatekeeper instead" >&2
+  [[ -f "$APP/Contents/CodeResources" ]] \
+    && spctl --assess --type execute -vv "$APP" 2>&1 | grep -qx "source=Notarized Developer ID"
+}
+notarized || fail "The shipped app has no stapled notarization ticket."
 echo "✓ bin/Memvana Shot.app $app_version ($archs), signed by $TEAM_ID and notarized"

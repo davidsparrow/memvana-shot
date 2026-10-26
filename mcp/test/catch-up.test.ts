@@ -24,7 +24,7 @@ describe("extraction claims", needsHelper, () => {
     await t.library.scan({ folder: t.folder, extractLimit: 0 });
     const other = Library.open(t.config, { photos: null });
     try {
-      const [a, b] = await Promise.all([t.library.scan(), other.scan()]);
+      const [a, b] = await Promise.all([t.library.scan({ readyForAnalysis: 5 }), other.scan({ readyForAnalysis: 5 })]);
       assert.ok("processed" in a.extraction && "processed" in b.extraction);
       assert.equal(a.extraction.processed + b.extraction.processed, 5, "each screenshot was extracted once");
       assert.equal((await t.library.status()).counts.extracted, 5);
@@ -41,14 +41,14 @@ describe("extraction claims", needsHelper, () => {
       t!.library.db.prepare("UPDATE screenshots SET extract_claimed_until = ? WHERE id = ?").run(until.toISOString(), claimed);
 
     claim(new Date(Date.now() + 60_000));
-    const first = await t.library.scan();
+    const first = await t.library.scan({ readyForAnalysis: 5 });
     assert.ok("processed" in first.extraction);
     assert.equal(first.extraction.processed, 4);
     assert.equal(first.extracting_elsewhere, 1);
     assert.match(first.next ?? "", /1 screenshots are being extracted in the background/);
 
     claim(new Date(Date.now() - 1000)); // the other process died
-    const second = await t.library.scan();
+    const second = await t.library.scan({ readyForAnalysis: 5 });
     assert.ok("processed" in second.extraction);
     assert.equal(second.extraction.processed, 1);
     assert.equal(second.extracting_elsewhere, undefined);

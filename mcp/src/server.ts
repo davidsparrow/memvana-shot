@@ -92,9 +92,11 @@ export function createServer(library: Library): McpServer {
       description:
         "Finds new, changed and removed screenshots in every source: registered folders and, once " +
         "connected, the Photos library (or registers `folder` first and scans just it). Then runs on-device " +
-        "extraction (OCR, Vision labels, thumbnail, visual fingerprint) on up to `extract_limit` pending " +
-        "screenshots, newest first. Only new or changed screenshots are processed, so it is cheap to call " +
-        "repeatedly. Nothing is uploaded and nothing is modified.",
+        "extraction (OCR, Vision labels, thumbnail, visual fingerprint), newest first: up to `extract_limit` " +
+        "of a new source's screenshots, and after that only new or changed ones, so it is cheap to call " +
+        "repeatedly. Older screenshots left unprepared at setup (`backlog`) are extracted only with " +
+        "`ready_for_analysis`, once the user has chosen to analyze more. Nothing is uploaded and nothing is " +
+        "modified.",
       inputSchema: {
         folder: z
           .string()
@@ -108,12 +110,30 @@ export function createServer(library: Library): McpServer {
           .max(5000)
           .optional()
           .describe("Max screenshots to extract this call (default 250; 0 = discover only)."),
+        ready_for_analysis: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .optional()
+          .describe(
+            "After the user picks how many to analyze: prepare older screenshots too, newest first, until this " +
+              "many are ready for analysis (counting ones already ready). Use blocks of up to 500.",
+          ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ folder, photos, extract_limit }, extra) => {
+    async ({ folder, photos, extract_limit, ready_for_analysis }, extra) => {
       try {
-        return json(await library.scan({ folder, photos, extractLimit: extract_limit, onProgress: progressReporter(extra) }));
+        return json(
+          await library.scan({
+            folder,
+            photos,
+            extractLimit: extract_limit,
+            readyForAnalysis: ready_for_analysis,
+            onProgress: progressReporter(extra),
+          }),
+        );
       } catch (err) {
         return failure(err);
       }
@@ -242,17 +262,22 @@ export function createServer(library: Library): McpServer {
     },
     async ({ limit, ids, include_guide }) => {
       try {
-        const { items, remaining } = library.analysisBatch({ limit, ids });
+        const { items, remaining, leased } = library.analysisBatch({ limit, ids });
         const content: CallToolResult["content"] = [];
         const tagVocabulary = library.tagVocabulary();
         const header = {
           batch_size: items.length,
           remaining_after_this_batch: remaining,
+          // Leased to other analysts, or to one that was stopped (those free up within 15 minutes).
+          being_analyzed_elsewhere: leased || undefined,
           tag_vocabulary: tagVocabulary.length ? tagVocabulary : undefined,
           next:
-            items.length === 0
-              ? "Nothing left to analyze."
-              : "Analyze each screenshot below, then call save_analyses once with one entry per id.",
+            items.length > 0
+              ? "Analyze each screenshot below, then call save_analyses once with one entry per id."
+              : leased > 0
+                ? `Nothing free to analyze: the other ${leased} are leased to other analysts, or to one that was ` +
+                  "stopped, and free up within 15 minutes."
+                : "Nothing left to analyze.",
         };
         content.push({ type: "text", text: JSON.stringify(header, null, 2) });
         if (items.length && include_guide !== false) content.push({ type: "text", text: ANALYSIS_GUIDE });
@@ -453,6 +478,68 @@ export function createServer(library: Library): McpServer {
     async ({ after, before, top }) => {
       try {
         return json(library.stats({ after, before, top }));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_interests",
+    {
+      title: "Repeated interests",
+      description:
+        "Subjects the user keeps saving screenshots about, strongest first: \"11 screenshots about pickleball " +
+        "equipment over four months\". Each comes with its count, when it started and last came up, whether " +
+        "it's `recurring` (several days over weeks or months) or a `burst`, recurring sub-subjects (`facets`), " +
+        "examples, and any album or tag already covering it. Built from the analyzed screenshots' topics and " +
+        "named things (people and sensitive screenshots are left out), grouped by shared screenshots, so " +
+        "different wordings of one subject (\"facebook ads\", \"facebook advertising\") can come back " +
+        "separately: combine them when you talk about them. Use for the first-run overview and when the " +
+        "user asks what they keep coming back to. Read-only.",
+      inputSchema: {
+        after: z.string().optional().describe("YYYY, YYYY-MM, YYYY-MM-DD or ISO time."),
+        before: z.string().optional().describe("Exclusive upper bound, same formats."),
+        limit: z.number().int().min(1).max(25).optional().describe("Default 12."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ after, before, limit }) => {
+      try {
+        return json(library.interests({ after, before, limit }));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "tag_interest",
+    {
+      title: "Tag a repeated interest",
+      description:
+        "Records the user's answer when you offered a tag for a repeated interest from get_interests (or " +
+        "for several you presented as one, such as \"facebook ads\" and \"facebook advertising\"). With `tag`, " +
+        "creates the tag if needed and puts it on every screenshot of those interests as an accepted " +
+        "suggestion (screenshots where the user rejected that tag keep their rejection). With `declined: " +
+        "true`, remembers the no, so get_interests marks them `tag_declined` and you don't offer them again. " +
+        "Only after the user answers.",
+      inputSchema: {
+        keys: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(10)
+          .describe("The `key` of each interest from get_interests that the answer covers."),
+        tag: z.string().min(1).max(40).optional().describe("The tag name the user agreed to."),
+        description: z.string().max(200).optional().describe("One line on what belongs in the tag."),
+        declined: z.boolean().optional().describe("The user doesn't want a tag for it."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ keys, tag, description, declined }) => {
+      try {
+        if ((tag === undefined) === (declined !== true)) throw new Error("Give either `tag` or `declined: true`.");
+        return json(library.tagInterest(keys, tag !== undefined ? { tag, description } : { declined: true }));
       } catch (err) {
         return failure(err);
       }

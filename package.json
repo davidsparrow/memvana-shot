@@ -1,6 +1,6 @@
 {
   "name": "memvana-shot",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Local-first screenshot intelligence for Claude.",
   "license": "MIT",
@@ -18,6 +18,7 @@
     "test": "node --disable-warning=ExperimentalWarning --test \"mcp/test/**/*.test.ts\"",
     "qa": "node scripts/qa.mjs auto",
     "qa:guided": "node scripts/qa.mjs guided",
+    "qa:scale": "node scripts/qa.mjs scale",
     "qa:clean": "node scripts/qa.mjs clean",
     "scale-test": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/scale-test.mjs",
     "fixtures": "swift scripts/make-fixtures.swift mcp/test/fixtures/library"

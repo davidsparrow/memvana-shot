@@ -19,11 +19,12 @@ produced on-device. You add the understanding.
 |---|---|
 | `get_status` | Check setup, see counts and get suggested next steps. Start here when unsure. |
 | `connect_photos` | Connect the Photos library's Screenshots album (iPhone screenshots too, via iCloud Photos). macOS asks permission the first time, so only after the user agrees. |
-| `scan_screenshots` | Register a folder (`folder`) or rescan every source (folders and Photos). Runs on-device extraction in batches (`extract_limit`, default 250). |
+| `scan_screenshots` | Register a folder (`folder`) or rescan every source (folders and Photos). Prepares a new source's newest 250 on-device, then only new and changed ones; `ready_for_analysis` prepares more once the user wants more analyzed. |
 | `get_analysis_batch` / `save_analyses` | Look at screenshots and record what they are and why they were saved. |
 | `search_screenshots` | Find screenshots: `query` holds the user's words, `also` holds your expansion terms. Matches by keywords, and by meaning once semantic search is set up. Supports date, tag and content-type filters. |
 | `get_related_screenshots` | "More like this": screenshots related to one, with the reasons (similar subject, looks alike, near-duplicate, shared tags or names, same session). |
 | `get_library_stats` | See what the user has been saving: topics, tags, content types, apps, captures per month, and the albums and folders they sorted screenshots into (`groups`). |
+| `get_interests` / `tag_interest` | Repeated interests: subjects the user keeps saving screenshots about, with counts and time spans. Record the user's yes or no when you offer one as a tag. |
 | `list_tags` / `create_tags` / `edit_tag` | The user's tags: list them, create them (with the user's OK), rename, merge, delete, or settle suggestions in bulk. |
 | `tag_screenshots` | Apply the user's tagging decisions: add tags, or remove them (which records a rejection), on given screenshots or a whole album or folder. |
 | `get_tagging_batch` / `suggest_tags` | Your own tag suggestions for analyzed screenshots. Text only, so it's cheap. |
@@ -65,17 +66,25 @@ for everything, so never ask them to use a command.
    a few ("Found 5 screenshots. Analyze all 5?"). Analysis sends the images to
    Claude, so it needs the user's yes. When there are more than 250, recommend
    starting with the newest 250, with 1,000 and everything as the other
-   options. Analysis uses their Claude usage, so a small first batch pays off
-   quickly.
-5. Analyze them (next section).
-6. Call `get_library_stats` and give the payoff, written as a short overview,
-   not a data dump:
+   options, and say roughly what each takes (see Analyzing a lot):
+   > Found 4,281 screenshots. Analyze the newest 250? That takes about
+   > 4 minutes and roughly $2–3 of Claude usage at API prices (on a Pro or
+   > Max plan it counts toward your usage limits instead). Or the newest
+   > 1,000 (about 15 minutes, roughly $10), or all 4,281 (about an hour,
+   > roughly $40; I'd check in every 500).
+
+   A small first batch pays off quickly, and the rest can follow any time.
+5. Analyze them (next section). If the user picked more than `ready_for_analysis`,
+   follow Analyzing a lot.
+6. Call `get_library_stats` and `get_interests`, then give the payoff, written
+   as a short overview, not a data dump:
    > I analyzed 250 screenshots. Recurring subjects: product and design
    > inspiration (47), AI and development (42), food (24)… I also noticed 11
    > screenshots about pickleball equipment spread over four months.
 
-   Group related topics into 5–8 human-sized themes with counts. Add one or two
-   specific, slightly surprising observations, then offer a few searches to try.
+   Group related topics into 5–8 human-sized themes with counts. Then add the
+   one or two most telling repeated interests (see Repeated interests), and
+   offer a few searches to try.
    Give a date for a particular screenshot only when a tool result showed you
    its `captured_at` (search and list results do). `get_library_stats` counts
    screenshots per month without saying which ones, so never match its months
@@ -83,14 +92,22 @@ for everything, so never ask them to use a command.
 7. **Offer starter tags.** If `get_library_stats` lists `groups`, the user
    already sorts some screenshots into Photos albums or folders, so offer
    those first ("You keep some in albums: Kitchen remodel (34), Recipes (12).
-   Want those as tags?"). Then propose more, for 6–12 in all, drawn from the
-   themes, each with a one-line description. On the user's OK (and after their
-   edits), `create_tags` with `proposed_by_ai: true`. For each album or folder
-   they turned into a tag, apply it with
-   `tag_screenshots({ album: name, add: [tag] })` (or `folder`). Then suggest
-   tags for the rest (see Tags). Skip groups that already have a matching
-   `tag`, and skip this step if Finder tags already cover their needs. Never
-   turn an album or folder into a tag without a yes.
+   Want those as tags?"). Offer a tag for each repeated interest you
+   mentioned ("Want a Pickleball tag for those 11?"). Then propose more, for
+   6–12 in all, drawn from the themes, each with a one-line description. On
+   the user's OK (and after their edits):
+   - theme tags: `create_tags` with `proposed_by_ai: true`;
+   - an album or folder: `tag_screenshots({ album: name, add: [tag] })` (or
+     `folder`);
+   - a repeated interest: `tag_interest({ keys, tag, description })`, which
+     creates the tag and puts it on the interest's screenshots. When the user
+     says no to one, call `tag_interest({ keys, declined: true })` so it isn't
+     offered again. Silence isn't a no.
+
+   Then suggest tags for the rest (see Tags). Skip groups and interests that
+   already have a matching `tag`, and skip this step if Finder tags already
+   cover their needs. Never turn an album, folder or interest into a tag
+   without a yes.
 8. **Offer semantic search once** if `get_status` shows
    `semantic_search.state: "not_set_up"` (see Semantic search).
 
@@ -117,6 +134,36 @@ Screenshots from Photos arrive with the name Photos gives them (usually
 `IMG_1234.PNG`, which says nothing) and the date Photos recorded. When the user corrects a description ("no,
 that's my kitchen remodel"), take a second look with
 `get_analysis_batch({ ids: [id] })` and save the corrected analysis.
+
+### Analyzing a lot
+
+When the user wants more analyzed than are ready (1,000, everything, or a
+number they name):
+
+- **Work in blocks of up to 500.** Before each block, the first one included,
+  call `scan_screenshots({ ready_for_analysis: 500 })` (or the smaller number
+  left). It tops up what's already prepared, preparing older screenshots on
+  the Mac, newest first, until that many are ready: about 30 seconds per 500
+  for folders, longer for Photos screenshots that have to come down from
+  iCloud. Then analyze the block with analysts as above (ceil(500 / 48) = 11
+  agents, in rounds of up to 4).
+- **Progress.** After each round of analysts, give one line ("288 of 1,000
+  analyzed"). `get_status` has the current counts.
+- **Up to 1,000:** go block after block without asking again.
+- **Everything, or more than 1,000:** check in after each block of 500: "500 of
+  4,281 done. Keep going?" Continue only on a yes.
+- **Estimates** for the question in First run step 4: about 70 screenshots a
+  minute with four analysts, and roughly a cent per screenshot of Claude
+  usage at API prices (Sonnet analysts). On a Pro or Max plan, analysis counts
+  toward the plan's usage limits instead of costing extra, and a big run can
+  reach them. Say "about" and "roughly"; these are rules of thumb.
+- **Stopping partway is safe.** The user can stop any time (Esc in Claude
+  Code, or "stop"), and so can a usage limit. Every saved analysis stays.
+  Later, "continue" picks up with the newest unanalyzed screenshot. If an
+  analyst was stopped mid-batch, its few screenshots show up as
+  `being_analyzed` in `get_status` and free up within 15 minutes.
+- When the user stops, or picked fewer than all, leave the rest (`backlog` in
+  `get_status`) alone until they ask for more.
 
 ## Tags
 
@@ -241,10 +288,45 @@ marks copies and re-captures. Mention duplicates when they're relevant, but
 never offer to delete anything. Without semantic search, relatedness uses
 looks, tags, names, topics and dates only, and `note` says so.
 
+## Repeated interests
+
+`get_interests` finds subjects the user keeps coming back to, from the
+analyzed screenshots: each with a count, `first` and `last` dates, how many
+`months` it spans, a `pattern`, recurring sub-subjects (`facets`), examples,
+and any album (`group`) or `tag` already covering it. Bring them up in the
+first-run overview, and when the user asks ("what do I keep coming back to?",
+"what projects do I seem to be working on?", "what have I been into
+lately?", with `after` and `before` for a period). Don't bring them up in
+conversations about something else, or after routine catch-up analysis.
+
+- Interests are grouped by the screenshots they share, so one subject can
+  come back under several wordings ("facebook ads", "facebook advertising",
+  "Facebook"), and a format can show up as if it were a subject ("webinar
+  slides"). Combine the ones that mean the same thing, and when you count a
+  combined one, say "about" (they can overlap).
+- Talk about the 3–5 most telling ones, in plain words with counts and time
+  spans: "pickleball equipment: 11 screenshots from March to July, mostly
+  paddles and rebound surfaces". Prefer specific subjects ("chiropractor
+  marketing", a named product or brand) to broad ones ("marketing").
+- `recurring` means saved on several days over weeks or months. A `burst` is
+  one stretch of research ("8 standing desks compared in one afternoon").
+- One `within` another is a narrower part of it: mention it as detail of the
+  broader one, or on its own when the broader one is generic ("sports").
+- Ground an interest with a search or a look at its examples when it helps.
+  Its `ids` list its screenshots.
+- Offer a tag only for an interest with no `tag` that isn't `tag_declined`,
+  and record the answer with `tag_interest` (see First run step 7), passing
+  the `key` of every interest you combined into the one you offered.
+- An interest is only a view. Never merge, move, hide or delete screenshots
+  because of one.
+- If `note` says too few screenshots are analyzed, or some aren't analyzed
+  yet, say so in a few words.
+
 ## "What have I been saving?"
 
-Use `get_library_stats`. Add a date range for "lately" or "this month", and
-compare two ranges for "what's changed". Then run one or two searches to ground
+Use `get_library_stats`, plus `get_interests` for what keeps coming up. Add a
+date range for "lately" or "this month", and compare two ranges for "what's
+changed". Then run one or two searches to ground
 each theme in concrete examples. Talk about patterns and counts ("17 screenshots
 of dehydrated foods since June"), not lists of files.
 
